@@ -1,0 +1,200 @@
+diff --git a/src/osd/OSDMap.cc b/src/osd/OSDMap.cc
+index f7f37d7..265c9c3 100644
+--- a/src/osd/OSDMap.cc
++++ b/src/osd/OSDMap.cc
+@@ -2622,6 +2622,117 @@ bool OSDMap::crush_ruleset_in_use(int ruleset) const
+   return false;
+ }
+ 
++int OSDMap::build_simple_v2(CephContext *cct, epoch_t e, uuid_d &fsid,
++			  int nosd, int pg_bits, int pgp_bits, int npool)
++{
++  ldout(cct, 10) << "build_simple_v2 on " << num_osd
++		 << " osds with " << pg_bits << " pg bits per osd, "
++		 << dendl;
++  epoch = e;
++  set_fsid(fsid);
++  created = modified = ceph_clock_now(cct);
++
++  if (nosd >=  0) {
++    set_max_osd(nosd);
++  } else {
++    // count osds
++    int maxosd = 0, numosd = 0;
++    const md_config_t *conf = cct->_conf;
++    vector<string> sections;
++    conf->get_all_sections(sections);
++    for (vector<string>::iterator i = sections.begin(); i != sections.end(); ++i) {
++      if (i->find("osd.") != 0)
++	continue;
++
++      const char *begin = i->c_str() + 4;
++      char *end = (char*)begin;
++      int o = strtol(begin, &end, 10);
++      if (*end != '\0')
++	continue;
++
++      if (o > cct->_conf->mon_max_osd) {
++	lderr(cct) << "[osd." << o << "] in config has id > mon_max_osd " << cct->_conf->mon_max_osd << dendl;
++	return -ERANGE;
++      }
++      numosd++;
++      if (o > maxosd)
++	maxosd = o;
++    }
++
++    set_max_osd(maxosd + 1);
++  }
++
++  // pgp_num <= pg_num
++  if (pgp_bits > pg_bits)
++    pgp_bits = pg_bits;
++
++  vector<string> pool_names;
++  //pool_names.push_back("rbd");
++  for(int i=0; i<npool; i++){
++    char p_name[8];
++    sprintf(p_name, "rbd-%d", i);
++    printf("rbd-%d", i);
++    pool_names.push_back(p_name);
++  }
++
++  stringstream ss;
++  int r;
++  if (nosd >= 0)
++    r = build_simple_crush_map(cct, *crush, nosd, &ss);
++  else
++    r = build_simple_crush_map_from_conf(cct, *crush, &ss);
++
++  //int poolbase = get_max_osd() ? get_max_osd() : 1;
++
++  int const default_replicated_ruleset = crush->get_osd_pool_default_crush_replicated_ruleset(cct);
++  assert(default_replicated_ruleset >= 0);
++
++  for (vector<string>::iterator p = pool_names.begin();
++       p != pool_names.end(); ++p) {
++    int64_t pool = ++pool_max;
++    pools[pool].type = pg_pool_t::TYPE_REPLICATED;
++    pools[pool].flags = cct->_conf->osd_pool_default_flags;
++    if (cct->_conf->osd_pool_default_flag_hashpspool)
++      pools[pool].set_flag(pg_pool_t::FLAG_HASHPSPOOL);
++    if (cct->_conf->osd_pool_default_flag_nodelete)
++      pools[pool].set_flag(pg_pool_t::FLAG_NODELETE);
++    if (cct->_conf->osd_pool_default_flag_nopgchange)
++      pools[pool].set_flag(pg_pool_t::FLAG_NOPGCHANGE);
++    if (cct->_conf->osd_pool_default_flag_nosizechange)
++      pools[pool].set_flag(pg_pool_t::FLAG_NOSIZECHANGE);
++    //pools[pool].size = cct->_conf->osd_pool_default_size;
++    //pools[pool].min_size = cct->_conf->get_osd_pool_default_min_size();
++    pools[pool].size = 3;
++    pools[pool].min_size = 1;
++    pools[pool].crush_ruleset = default_replicated_ruleset;
++    pools[pool].object_hash = CEPH_STR_HASH_RJENKINS;
++    //pools[pool].set_pg_num(poolbase << pg_bits);
++    //pools[pool].set_pgp_num(poolbase << pgp_bits);
++    pools[pool].set_pg_num(pg_bits);
++    pools[pool].set_pgp_num(pgp_bits);
++    pools[pool].last_change = epoch;
++    pool_name[pool] = *p;
++    name_pool[*p] = pool;
++  }
++
++  if (r < 0)
++    lderr(cct) << ss.str() << dendl;
++
++  for (int i=0; i<get_max_osd(); i++) {
++    set_state(i, 0);
++    set_weight(i, CEPH_OSD_OUT);
++  }
++
++  map<string,string> profile_map;
++  r = get_erasure_code_profile_default(cct, profile_map, &ss);
++  if (r < 0) {
++    lderr(cct) << ss.str() << dendl;
++    return r;
++  }
++  set_erasure_code_profile("default", profile_map);
++  return 0;
++}
++
+ int OSDMap::build_simple(CephContext *cct, epoch_t e, uuid_d &fsid,
+ 			  int nosd, int pg_bits, int pgp_bits)
+ {
+diff --git a/src/osd/OSDMap.h b/src/osd/OSDMap.h
+index 272bd7d..3f75c7b 100644
+--- a/src/osd/OSDMap.h
++++ b/src/osd/OSDMap.h
+@@ -832,6 +832,8 @@ public:
+    * @param num_osd [in] number of OSDs if >= 0 or read from conf if < 0
+    * @return **0** on success, negative errno on error.
+    */
++  int build_simple_v2(CephContext *cct, epoch_t e, uuid_d &fsid,
++		   int num_osd, int pg_bits, int pgp_bits, int num_pool);
+   int build_simple(CephContext *cct, epoch_t e, uuid_d &fsid,
+ 		   int num_osd, int pg_bits, int pgp_bits);
+   static int _build_crush_types(CrushWrapper& crush);
+diff --git a/src/tools/osdmaptool.cc b/src/tools/osdmaptool.cc
+index 76c05a0..775d67f 100644
+--- a/src/tools/osdmaptool.cc
++++ b/src/tools/osdmaptool.cc
+@@ -58,6 +58,7 @@ int main(int argc, const char **argv)
+   bool createsimple = false;
+   bool create_from_conf = false;
+   int num_osd = 0;
++  int num_pool = 1;
+   int pg_bits = g_conf->osd_pg_bits;
+   int pgp_bits = g_conf->osd_pgp_bits;
+   bool clobber = false;
+@@ -72,6 +73,7 @@ int main(int argc, const char **argv)
+   bool test_map_pgs = false;
+   bool test_map_pgs_dump = false;
+   bool test_random = false;
++  bool resize_max_osd = false;
+ 
+   std::string val;
+   std::ostringstream err;
+@@ -86,6 +88,10 @@ int main(int argc, const char **argv)
+       print_json = true;
+     } else if (ceph_argparse_flag(args, i, "--tree", (char*)NULL)) {
+       tree = true;
++    } else if (ceph_argparse_withint(args, i, &num_pool, &err, "--new_pool_num", (char*)NULL)) {
++      printf("new pool num: %d", num_pool);
++    } else if (ceph_argparse_withint(args, i, &num_osd, &err, "--resize_max_osd", (char*)NULL)) {
++      resize_max_osd = true;
+     } else if (ceph_argparse_withint(args, i, &num_osd, &err, "--createsimple", (char*)NULL)) {
+       if (!err.str().empty()) {
+ 	cerr << err.str() << std::endl;
+@@ -211,7 +217,7 @@ int main(int argc, const char **argv)
+     }
+     uuid_d fsid;
+     memset(&fsid, 0, sizeof(uuid_d));
+-    osdmap.build_simple(g_ceph_context, 0, fsid, num_osd, pg_bits, pgp_bits);
++    osdmap.build_simple_v2(g_ceph_context, 0, fsid, num_osd, pg_bits, pgp_bits, num_pool);
+     modified = true;
+   }
+ 
+@@ -229,6 +235,16 @@ int main(int argc, const char **argv)
+     osdmap.clear_temp();
+   }
+ 
++  if (resize_max_osd) {
++    OSDMap::Incremental inc;
++    inc.fsid = osdmap.get_fsid();
++    inc.epoch = osdmap.get_epoch()+1;
++    inc.new_max_osd = num_osd;
++    osdmap.apply_incremental(inc);
++    cout << me << ": resize max osd " << num_osd << std::endl;
++    modified = true;
++  }
++
+   if (!import_crush.empty()) {
+     bufferlist cbl;
+     std::string error;
+@@ -453,6 +469,7 @@ int main(int argc, const char **argv)
+   if (!print && !print_json && !tree && !modified && 
+       export_crush.empty() && import_crush.empty() && 
+       test_map_pg.empty() && test_map_object.empty() &&
++      ! resize_max_osd &&
+       !test_map_pgs && !test_map_pgs_dump) {
+     cerr << me << ": no action specified?" << std::endl;
+     usage();
