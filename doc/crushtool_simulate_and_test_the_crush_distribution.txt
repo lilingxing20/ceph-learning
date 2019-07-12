@@ -1,0 +1,362 @@
+@ crushtool 模拟测试 CRUSH 分布情况
+
+@@ 前言
+  Ceph 通过 CRUSH 实现数据的伪随机分布。在 ceph 里，一但是你的 CRUSH 创建成功(无变更)，你创建的所有 object 对应于 OSD 的映射关系是已经确认了。这就是所说的伪随机分布，先决条件已经确认，可以推算数据的具体分布落位。
+
+
+@@ 创建 crush map
+使用 ceph 的 crushtool 工具可以实现创建、编辑、测试 crush map。
+
+[root@node232 ~]# crushtool --outfn crushmap --build --num_osds 10 host straw 2 rack straw 2 default straw 0
+[root@node232 ~]# crushtool -i crushmap --tree
+ID CLASS WEIGHT   TYPE NAME          
+-9       10.00000 default default    
+-6        4.00000     rack rack0     
+-1        2.00000         host host0
+0        1.00000             osd.0  
+1        1.00000             osd.1  
+-2        2.00000         host host1
+2        1.00000             osd.2  
+3        1.00000             osd.3  
+-7        4.00000     rack rack1     
+-3        2.00000         host host2
+4        1.00000             osd.4  
+5        1.00000             osd.5  
+-4        2.00000         host host3
+6        1.00000             osd.6  
+7        1.00000             osd.7  
+-8        2.00000     rack rack2     
+-5        2.00000         host host4
+8        1.00000             osd.8  
+9        1.00000             osd.9  
+
+
+
+其中 --outfn/-o crushmap 表示导出的 map 的文件名是 crushmap，--build 表示创建一个 crushmap, --num_osds 表示此 map 包含 10 个 osd, "host straw 2" 表示每个 host 里包含 2 个 osd, "rack straw 2" 表示每个 rack 里包含 2 个host, "default straw 0" 表示所有的 rack 都包含在一个 root 里。
+
+注：crush 的层级可以自定义添加，比如在rack 层级上可以添加 row 级，整个结构为 --num_osds 10 host straw 2 rack straw 2 row straw 1 default straw 0，生成的crush map 如下所示
+
+[root@node232 ~]# crushtool --outfn  crushmap-1 --build --num_osds 10 host straw 2 rack straw 2 row straw 1 default straw 0
+[root@node232 ~]# crushtool  -i crushmap-1  --tree
+ID  CLASS WEIGHT   TYPE NAME              
+-12       10.00000 default default        
+-9        4.00000     row row0           
+-6        4.00000         rack rack0     
+-1        2.00000             host host0
+  0        1.00000                 osd.0  
+  1        1.00000                 osd.1  
+-2        2.00000             host host1
+  2        1.00000                 osd.2  
+  3        1.00000                 osd.3  
+-10        4.00000     row row1           
+-7        4.00000         rack rack1     
+-3        2.00000             host host2
+  4        1.00000                 osd.4  
+  5        1.00000                 osd.5  
+-4        2.00000             host host3
+  6        1.00000                 osd.6  
+  7        1.00000                 osd.7  
+-11        2.00000     row row2           
+-8        2.00000         rack rack2     
+-5        2.00000             host host4
+  8        1.00000                 osd.8
+  9        1.00000                 osd.9
+
+
+依据自己的需要可以创建出五花八门的crush map。
+
+
+
+@@ 编辑 crush map
+创建之后会在本地目录生成一个 crushmap 的二进制文件，可以通过 crushtool 工具进行反编译
+
+[root@node232 ~]# crushtool  -d crushmap -o crushmap.txt
+
+
+
+查看 crushmap.txt 发现 crush type 部分只有我们创建的那几个层级(如下所示)，不再是默认的 crushmap 的有 10 个层级。
+
+[root@node232 ~]# cat crushmap.txt
+# begin crush map
+tunable choose_local_tries 0
+tunable choose_local_fallback_tries 0
+tunable choose_total_tries 50
+tunable chooseleaf_descend_once 1
+tunable chooseleaf_vary_r 1
+tunable chooseleaf_stable 1
+tunable straw_calc_version 1
+tunable allowed_bucket_algs 54
+# devices
+device 0 osd.0
+device 1 osd.1
+device 2 osd.2
+device 3 osd.3
+device 4 osd.4
+device 5 osd.5
+device 6 osd.6
+device 7 osd.7
+device 8 osd.8
+device 9 osd.9
+# types
+type 0 osd
+type 1 host
+type 2 rack
+type 3 row
+type 4 default
+# buckets
+host host0 {
+    id -1        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item osd.0 weight 1.000
+    item osd.1 weight 1.000
+}
+host host1 {
+    id -2        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item osd.2 weight 1.000
+    item osd.3 weight 1.000
+}
+host host2 {
+    id -3        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item osd.4 weight 1.000
+    item osd.5 weight 1.000
+}
+host host3 {
+    id -4        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item osd.6 weight 1.000
+    item osd.7 weight 1.000
+}
+host host4 {
+    id -5        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item osd.8 weight 1.000
+    item osd.9 weight 1.000
+}
+rack rack0 {
+    id -6        # do not change unnecessarily
+    # weight 4.000
+    alg straw
+    hash 0    # rjenkins1
+    item host0 weight 2.000
+    item host1 weight 2.000
+}
+rack rack1 {
+    id -7        # do not change unnecessarily
+    # weight 4.000
+    alg straw
+    hash 0    # rjenkins1
+    item host2 weight 2.000
+    item host3 weight 2.000
+}
+rack rack2 {
+    id -8        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item host4 weight 2.000
+}
+row row0 {
+    id -9        # do not change unnecessarily
+    # weight 4.000
+    alg straw
+    hash 0    # rjenkins1
+    item rack0 weight 4.000
+}
+row row1 {
+    id -10        # do not change unnecessarily
+    # weight 4.000
+    alg straw
+    hash 0    # rjenkins1
+    item rack1 weight 4.000
+}
+row row2 {
+    id -11        # do not change unnecessarily
+    # weight 2.000
+    alg straw
+    hash 0    # rjenkins1
+    item rack2 weight 2.000
+}
+default default {
+    id -12        # do not change unnecessarily
+    # weight 10.000
+    alg straw
+    hash 0    # rjenkins1
+    item row0 weight 4.000
+    item row1 weight 4.000
+    item row2 weight 2.000
+}
+# rules
+rule replicated_rule {
+    id 0
+    type replicated
+    min_size 1
+    max_size 10
+    step take default
+    step chooseleaf firstn 0 type host
+    step emit
+}
+# 为 crushmap.txt 添加 crush rule
+rule  custom {
+        id 1
+        type replicated
+        min_size 1
+        max_size 10
+        step take default
+        step choose firstn 1 type row
+        step chooseleaf  firstn 0 type host
+        step emit
+}
+# end crush map
+
+
+
+
+rule custom 简要说明：
+1.在 root 层级里选择一个 row 级层作为后续隔离域的基础
+2.在选中的 row 级层里，以 host 为隔离域，选择 osd
+
+
+编辑后我们需要的 crushmap 之后，再次通过 crushtool 进行编译
+
+[root@node232 ~]# crushtool -c crushmap.txt -o crushmap_new
+
+
+
+
+@@ 测试 crush map
+
+[root@node232 ~]# crushtool -i crushmap_new --test --show-statistics --rule 1 --min-x 1 --max-x 5 --num-rep 2  --show-mappings
+rule 1 (custom), x = 1..5, numrep = 2..2
+CRUSH rule 1 x 1 [9]      # 映射关系,即Object 1 映射到了 OSD 9
+CRUSH rule 1 x 2 [7,4]    # Object 2 映射到了 OSD 7、4
+CRUSH rule 1 x 3 [7,4]
+CRUSH rule 1 x 4 [2,0]
+CRUSH rule 1 x 5 [7,4]
+rule 1 (custom) num_rep 2 result size == 1:    1/5
+rule 1 (custom) num_rep 2 result size == 2:    4/5
+
+
+
+参数说明：
+--test 表示调用 crushtool 里的测试功能
+--show-statistics 表示显示统计结果
+--rule 1 表示使用rule 1 ,即我们自己创建的rule custom
+--min-x 1 --max-x 5 表示创建的object的数量（如果不指定，表示创建 1024 )
+--num-rep 2 表示创建的副本数为 2
+--show-mappings 表示显示具体的映射关系
+
+rule 1 (custom) num_rep 2 result size == 1:    1/5
+rule 1 (custom) num_rep 2 result size == 2:    4/5
+前者表示 1/5 的 object 成功映射到了一个 osd 上 ##表示映射有不成功
+后者表示 4/5 的 object 成功映射到了两个 osd 上
+
+
+
+@@ 解析：
+
+从前文的 cursh map 里可知，当 crush 选择 row 层级的 row 2 时，由于在此层级下只有一个 host，且隔离域刚好为host，所以无法再映射第二副本。
+通过 --set-choose-total-tries 强制指定重试次数:
+
+
+[root@node232 ~]# crushtool -i crushmap_new --test --show-statistics --rule 1 --min-x 1 --max-x 5 --num-rep 2  --show-mappings --show-choose-tries --set-choose-total-tries 1 --show-utilization -o newmap
+rule 1 (custom), x = 1..5, numrep = 2..2
+CRUSH rule 1 x 1 [9]     ##映射失败
+CRUSH rule 1 x 2 [7]     ##映射失败
+CRUSH rule 1 x 3 [7,4]
+CRUSH rule 1 x 4 [2,0]
+CRUSH rule 1 x 5 [7,4]
+rule 1 (custom) num_rep 2 result size == 1:    2/5
+rule 1 (custom) num_rep 2 result size == 2:    3/5
+# --show-utilization 可以显示OSD的实际的object映射数以及目标映射值
+  device 0:         stored : 1     expected : 0.5
+  device 2:         stored : 1     expected : 0.5
+  device 4:         stored : 2     expected : 0.5
+  device 7:         stored : 3     expected : 0.5
+  device 9:         stored : 1     expected : 0.5
+# --show-choose-tries 显示映射时 retry 的次数
+0:        19
+
+
+
+
+当强制指只制尝试一次显然会影响 CRUSH的 分布效果，默认值为50
+
+[root@node232 ~]# crushtool -i crushmap_new --test --show-statistics --rule 1 --min-x 1 --max-x 5 --num-rep 2  --show-mappings --show-choose-tries --show-utilization -o newmap
+rule 1 (custom), x = 1..5, numrep = 2..2
+CRUSH rule 1 x 1 [9]
+CRUSH rule 1 x 2 [7,4]
+CRUSH rule 1 x 3 [7,4]
+CRUSH rule 1 x 4 [2,0]
+CRUSH rule 1 x 5 [7,4]
+rule 1 (custom) num_rep 2 result size == 1:    1/5
+rule 1 (custom) num_rep 2 result size == 2:    4/5
+  device 0:         stored : 1     expected : 0.5
+  device 2:         stored : 1     expected : 0.5
+  device 4:         stored : 3     expected : 0.5
+  device 7:         stored : 3     expected : 0.5
+  device 9:         stored : 1     expected : 0.5
+0:        20
+1:         2
+2:         1
+3:         0
+4:         0
+5:         0
+6:         0
+7:         0
+8:         0
+9:         0
+10:         0
+11:         0
+12:         0
+13:         0
+14:         0
+15:         0
+16:         0
+17:         0
+18:         0
+19:         0
+20:         0
+21:         0
+22:         0
+23:         0
+24:         0
+25:         0
+26:         0
+27:         0
+28:         0
+29:         0
+30:         0
+31:         0
+32:         0
+33:         0
+34:         0
+35:         0
+36:         0
+37:         0
+38:         0
+39:         0
+40:         0
+41:         0
+42:         0
+43:         0
+44:         0
+45:         0
+46:         0
+47:         0
+48:         0
+49:         0
+
+
+
