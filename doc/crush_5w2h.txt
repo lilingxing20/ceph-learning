@@ -1,0 +1,203 @@
+Ceph - CRUSH map
+
+W1: CRUSH map 是什么
+W2: CRUSH map 包含什么
+W3: CRUSH map 有什么用
+W4: CRUSH map 什么时候用
+W5: CRUSH map 什么地方用
+H1: CRUSH map 如何创建编辑
+H2: CRUSH map 如何设计
+
+
+W1: CRUSH map 是什么
+  CRUSH map 是一张描述集群可用存储资源和层级结构的图。
+
+W2: CRUSH map 包含什么
+CRUSH map 组成部分
+  * 层次化的 Cluster Map
+    - 配置参数
+    - 设备（OSD）列表
+    - 桶（bucket）类型定义
+    - 把设备汇聚为物理或逻辑位置的桶列表
+  * Placement Rules
+    - 指示 CRUSH 如何复制存储池里的数据的规则列表
+
+
+1) 配置参数
+# begin crush map
+tunable choose_local_tries 0
+tunable choose_local_fallback_tries 0
+tunable choose_total_tries 50
+tunable chooseleaf_descend_once 1
+tunable chooseleaf_vary_r 1
+tunable chooseleaf_stable 1
+tunable straw_calc_version 1
+tunable allowed_bucket_algs 54
+
+2) 设备（OSD）列表
+# devices
+device 0 osd.0 class hdd
+device 1 osd.1 class hdd
+device 2 osd.2 class hdd
+device 3 osd.3 class hdd
+device 4 osd.4 class hdd
+device 5 osd.5 class hdd
+device 6 osd.6 class hdd
+device 7 osd.7 class hdd
+device 8 osd.8 class hdd
+
+3) 桶（bucket）类型定义
+# types
+type 0 osd
+type 1 host
+type 2 chassis
+type 3 rack
+type 4 row
+type 5 pdu
+type 6 pod
+type 7 room
+type 8 datacenter
+type 9 region
+type 10 root
+
+4) 把设备汇聚为物理或逻辑位置的桶列表
+# buckets
+host node231 {
+	id -3		# do not change unnecessarily
+	id -4 class hdd		# do not change unnecessarily
+	# weight 0.023
+	alg straw2
+	hash 0	# rjenkins1
+	item osd.0 weight 0.008
+	item osd.3 weight 0.008
+	item osd.7 weight 0.008
+}
+host node232 {
+	id -5		# do not change unnecessarily
+	id -6 class hdd		# do not change unnecessarily
+	# weight 0.023
+	alg straw2
+	hash 0	# rjenkins1
+	item osd.1 weight 0.008
+	item osd.4 weight 0.008
+	item osd.6 weight 0.008
+}
+host node233 {
+	id -7		# do not change unnecessarily
+	id -8 class hdd		# do not change unnecessarily
+	# weight 0.023
+	alg straw2
+	hash 0	# rjenkins1
+	item osd.2 weight 0.008
+	item osd.5 weight 0.008
+	item osd.8 weight 0.008
+}
+root default {
+	id -1		# do not change unnecessarily
+	id -2 class hdd		# do not change unnecessarily    ## bucket的ID号，crushmap中所有bucket的编号都是负数
+	# weight 0.069                                           ## bucket权重值，等于所有item bucket权重总和
+	alg straw2                                               ## 算法，包括uniform/list/tree/straw/straw2
+	hash 0	# rjenkins1                                      ## hash算法
+	item node231 weight 0.023                                ## 包含的bucket 或 osd
+	item node232 weight 0.023                                ## 包含的bucket 或 osd
+	item node233 weight 0.023                                ## 包含的bucket 或 osd
+}
+
+4) 指示 CRUSH 如何复制存储池里的数据的规则列表
+# rules
+rule replicated_rule {
+	id 0                                 # rules集的编号，顺序编即可
+	type replicated                      # 定义pool类型为replicated(还有erasure模式)
+	min_size 1                           # pool中最小指定的副本数量不能小1
+	max_size 10                          # pool中最大指定的副本数量不能大于10
+	step take default                    # 查找bucket入口点，一般是root类型的bucket
+	step chooseleaf firstn 0 type host   # 选择一个host，并递归选择叶子节点osd
+	step emit                            # 结束
+}
+
+# end crush map
+
+
+W3: CRUSH map 有什么用
+  Ceph 根据 CRUSH map 并使用 CRUSH 把数据伪随机地存储、检索于整个集群的 OSD 里。
+
+
+W4: CRUSH map 什么时候用
+  - 在存储或检索数据时，根据 CRUSH map 并使用 CRUSH 计算数据对象的存储位置
+  - 在设备增加或减少时，修改 CRUSH map 做相应变化
+
+
+W5: CRUSH map 什么地方用
+  - Ceph 客户端
+  - Ceph OSD 节点
+
+
+H1: CRUSH map 如何创建
+  1. 使用crushtool工具构建
+    # crushtool -o crushmap.bin --build --num_osds 320 node straw 4 rack straw 20 row straw 2 root straw 0
+    # crushtool  -d crushmap.bin -o crushmap.txt
+    # vim crushmap.txt
+    # crushtool -c crushmap.txt -o crushmap_new.bin
+     
+  2. 从集群导出
+    # ceph osd getcrushmap -o crushmap.bin
+    # crushtool -d crushmap.bin -o crushmap.txt
+    # vim crushmap.txt
+    # crushtool -c crushmap.txt -o crushmap_new.bin
+
+
+H2: CRUSH map 如何设计
+  CRUSH Map是一个树形结构，叶子节点是device（也就是osd），其他的节点称为bucket节点，这些bucket都是虚构的节点，可以根据物理结构进行抽象，当然树形结构只有一个最终的根节点称之为root节点，中间虚拟的bucket节点可以是数据中心抽象、机房抽象、机架抽象、主机抽象等。OSD的权重和它的容量有关系，现在的约定是1T容量的权重是1，OSD的权重就是它的容量/1T。
+
+  设计 Ceph 集群 CRUSH map 过程：
+  1) 从集群导出（或创建）
+    # ceph osd getcrushmap -o crushmap_compiled_file
+  2) 反编译
+    # crushtool -d crushmap_compiled_file -o crushmap_decompiled_file
+  3) 编辑修改
+    # vim crushmap_decompiled_file
+  4) 编译
+    # crushtool -d crushmap_decompiled_file -o newcrushmap
+  5) 导入集群中
+    # ceph osd setcrushmap -i newcrushmap
+
+
+
+----------------------------------------
+
+疑问：
+
+1．如果出现了设备异常，CRUSH会重新计算一个替代的位置。问题是，在分布式系统中，两个不同的客户端去计算这个副本的问题，第一个客户端计算的时候认为设备正常，第二个客户端计算时认为设备异常，需要重新计算，那么二者的计算结果就会不同。
+2．设备异常时会把副本写到一个新的位置，如果这个设备恢复了，后面需要把副本从新位置迁移回到原本应该在的位置？
+3．每个客户端必须看到一致的cluster map，这个map中包含了节点和设备的状态，而ceph是去中心化的，这个cluster map可能是由一个类似zookeeper的组件来维护的。
+
+
+
+----------------------------------------
+Ceph - CRUSH 算法
+
+W1: 什么是 CRUSH 算法
+W2: 为什么设计 CRUSH 算法
+W3: CRUSH 算法因子
+
+
+W1: 什么是 CRUSH 算法
+
+  CRUSH 算法的全称为：Controlled Scalable Decentralized Placement of Replicated Data，可控的、可扩展的、分布式的副本数据放置算法。
+  CRUSH 算法就是 PG 到 OSD 的映射的过程算法。(如：一个 Objec t需要保存三个副本，也就是需要保存在三个osd上)。
+
+
+W2: 为什么设计 CRUSH 算法
+
+  数据分布：CRUSH 算法是一种基于哈希的数据分布算法，可以从所有的 OSD 中，随机性选副本数个 OSD 存储数据，使数据能均匀的分布到各个节点上。
+  负载均衡：CRUSH 算法又是一个伪随机的过程，对于同一个 PG 每次随机选择的结果是不变的，也就是映射的 OSD 集合是固定的，通过 CRUSH 算法计算出对象数据存储在那些 OSD 中，客户端直接连接 OSD 节点，使 Ceph 集群中数据访问读写操作负载在各个节点和磁盘。
+  集群伸缩：CRUSH 算法计算 PG 到 OSD 的映射过程，增加或者删除节点设备时，最小化数据的迁移量来使集群尽快恢复平衡。
+
+
+W3: CRUSH 算法原理
+  层次化的 Cluster Map 反映了存储系统层级的物理拓扑结构。定义了 OSD 集群具有层级关系的静态拓扑结构。OSD层级使得 CRUSH 算法在选择 OSD 时实现了机架感知能力，也就是通过规则定义，使得副本可以分布在不同的机架、不同的机房中、提供数据的安全性 。
+  Placement Rules 决定了一个 PG 的对象副本如何选择的规则，通过这些可以自己设定规则，用户可以自定义设置副本在集群中的分布。
+
+
+W4: CRUSH 算法过程
+  Crush算法按照 rule 从 bucket 中选择 item 的时候，一般和 bucket 的权重有关系，每个 bucket 的权重是所有孩子的权重的和。所以权重是按照自下往上的顺序，依次计算的，也就是先算出 osd 的权重，然后再算出它父辈的权重。
