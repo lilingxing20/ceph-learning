@@ -1,0 +1,518 @@
+Ceph 中 bucket 随机选择算法
+
+在 CRUSH 的实现中，Sage 一共设计了5种不同的基本选择算法，这些算法是实现其他更复杂算法的基础。
+
+一、 bucket 数据结构介绍
+
+struct crush_bucket {
+    // bucket 的 ID 号，crushmap中所有bucket的编号都为负数
+    __s32 id;        /* this'll be negative */
+    // bucket 的类型(uniform/list/tree/straw/straw2)
+    __u16 type;      /* non-zero; type=0 is reserved for devices */
+    // bucket 的使用算法
+    __u8 alg;        /* one of CRUSH_BUCKET_* */
+    // bucket 使用哪种hash算法
+    __u8 hash;       /* which hash function to use, CRUSH_HASH_* */
+    // bucket 权重值
+    __u32 weight;    /* 16-bit fixed point */
+    // bucket 中包含的items的数量
+    __u32 size;      /* num items */
+    // bucket 中包含的items的内容
+    __s32 *items;
+
+    /*
+     * cached random permutation: used for uniform bucket and for
+     * the linear search fallback for the other bucket types.
+     */
+    // 缓存进行随机排列的输入值
+    __u32 perm_x;  /* @x for which *perm is defined */
+    // 缓存进行随机排列结果perm中可用的个数
+    __u32 perm_n;  /* num elements of *perm that are permuted/defined */
+    // 对bucket中items的缓存随机排列结果
+    __u32 *perm;
+};
+
+
+
+二、 bucket 随机选择算法
+
+1. Uniform Bucket
+
+1.1 uniform 类型 bucket 的数据结构
+
+struct crush_bucket_uniform {
+    // 通用bucket定义
+    struct crush_bucket h;
+    // uniform bucket 中所有 items 的权重值（uniform类型的bucket，其所有items的权重值是一样的）
+    __u32 item_weight;  /* 16-bit fixed point; all items equally weighted */
+};
+
+
+1.2 uniform类型bucket算法分析
+
+/* uniform */
+static int bucket_uniform_choose(struct crush_bucket_uniform *bucket,
+				 int x, int r)
+{
+	return bucket_perm_choose(&bucket->h, x, r);
+}
+static int bucket_perm_choose(struct crush_bucket *bucket,
+			      int x, int r)
+{
+	unsigned int pr = r % bucket->size;
+	unsigned int i, s;
+
+	/* start a new permutation if @x has changed */
+	if (bucket->perm_x != (__u32)x || bucket->perm_n == 0) {
+		dprintk("bucket %d new x=%d\n", bucket->id, x);
+		bucket->perm_x = x;
+
+		/* optimize common r=0 case */
+		if (pr == 0) {
+			s = crush_hash32_3(bucket->hash, x, bucket->id, 0) %
+				bucket->size;
+			bucket->perm[0] = s;
+			bucket->perm_n = 0xffff;   /* magic value, see below */
+			goto out;
+		}
+
+		for (i = 0; i < bucket->size; i++)
+			bucket->perm[i] = i;
+		bucket->perm_n = 0;
+	} else if (bucket->perm_n == 0xffff) {
+		/* clean up after the r=0 case above */
+		for (i = 1; i < bucket->size; i++)
+			bucket->perm[i] = i;
+		bucket->perm[bucket->perm[0]] = 0;
+		bucket->perm_n = 1;
+	}
+
+	/* calculate permutation up to pr */
+	for (i = 0; i < bucket->perm_n; i++)
+		dprintk(" perm_choose have %d: %d\n", i, bucket->perm[i]);
+	while (bucket->perm_n <= pr) {
+		unsigned int p = bucket->perm_n;
+		/* no point in swapping the final entry */
+		if (p < bucket->size - 1) {
+			i = crush_hash32_3(bucket->hash, x, bucket->id, p) %
+				(bucket->size - p);
+			if (i) {
+				unsigned int t = bucket->perm[p + i];
+				bucket->perm[p + i] = bucket->perm[p];
+				bucket->perm[p] = t;
+			}
+			dprintk(" perm_choose swap %d with %d\n", p, p+i);
+		}
+		bucket->perm_n++;
+	}
+	for (i = 0; i < bucket->size; i++)
+		dprintk(" perm_choose  %d: %d\n", i, bucket->perm[i]);
+
+	s = bucket->perm[pr];
+out:
+	dprintk(" perm_choose %d sz=%d x=%d r=%d (%d) s=%d\n", bucket->id,
+		bucket->size, x, r, pr, s);
+	return bucket->items[s];
+}
+
+输入参数：
+  1）crush_bucket_uniform 结构指针变量 bucket ；
+  2）待执行运算的输入值 x ；
+  3）输入值 x 的副本位置 r 。
+
+输出参数：
+  1）经过uniform算法计算后的bucket中的item 。
+
+算法分析：
+  1）对于第一次执行 uniform 算法来说，经过 hash() 函数计算出来一个随机数后对 bucket.h.size 取模，得到一个随机的item位置，之后将这个随机位置写入到 bucket.h.perm[0] 中且返回该随机数指定的 bucket.h.item ；
+  2）对于后续执行 uniform 算法来说，由于 bucket.h.perm[] 中已经有随机数且 bucket.h.perm_n 中保存 bucket.h.perm[] 中可用的随机数的个数，因此，对于副本位置 r 来说：
+    若 r % bucket.h.size < bucket.h.perm_n，则直接从 bucket.h.perm[r%bucket.h.size] 获取随机数，之后返回该随机数指定的 bucket.h.item。
+    若 r % bucket.h.size >= bucket.h.perm_n，则需要执行hash()函数计算出来一个随机数后对(bucket.h.size-bucket.h.perm_n)取模，得到 i，之后将 bucket.h.perm[] 中 bucket.h.perm_n+i 与 bucket.h.perm_n 位置的内容互换，之后 bucket.h.perm_n++，反复执行，直到 r % bucket.h.size < bucket.h.perm_n。最后从 bucket.h.perm[r%bucket.h.size] 获取随机数，之后返回该随机数指定的 bucket.h.item 。
+
+1.3 uniform算法适用条件。
+  1）bucket中所有的items的权重是一样的，也就是说uniform算法不考虑权重；
+  2）uniform算法适合bucket中的item不经常变更的情况，若经常变更则bucket.h.size会变化，从而导致bucket.h.perm_n需要重新计算，数据会大面积的迁移；
+
+
+
+2. List Bucket
+
+2.1 list类型bucket的数据结构
+
+struct crush_bucket_list {
+    // 通用bucket定义
+    struct crush_bucket h;
+    // bucket 中每个item的权重值
+    __u32 *item_weights;  /* 16-bit fixed point */
+    // bucket 中从第一个item开始到第i个item的权重之和
+    __u32 *sum_weights;   /* 16-bit fixed point.  element i is sum
+                 of weights 0..i, inclusive */
+};
+
+
+2.2 list类型bucket算法分析
+
+/* list */
+static int bucket_list_choose(struct crush_bucket_list *bucket,
+			      int x, int r)
+{
+	int i;
+
+	for (i = bucket->h.size-1; i >= 0; i--) {
+		__u64 w = crush_hash32_4(bucket->h.hash,x, bucket->h.items[i],
+					 r, bucket->h.id);
+		w &= 0xffff;
+		dprintk("list_choose i=%d x=%d r=%d item %d weight %x "
+			"sw %x rand %llx",
+			i, x, r, bucket->h.items[i], bucket->item_weights[i],
+			bucket->sum_weights[i], w);
+		w *= bucket->sum_weights[i];
+		w = w >> 16;
+		/*dprintk(" scaled %llx\n", w);*/
+		if (w < bucket->item_weights[i])
+			return bucket->h.items[i];
+	}
+
+	dprintk("bad list sums for bucket %d\n", bucket->h.id);
+	return bucket->h.items[0];
+}
+
+输入参数：
+  1）crush_bucket_list 结构指针变量 bucket ；
+  2）待执行运算的输入值 x ；
+  3）输入值 x 的副本位置 r ；
+
+输出参数：
+  1）经过 list 算法计算后的 bucket 中的 item ；
+
+算法分析：
+  bucket 中的 item 在内存中使用链表数据结构来保存，其所包含的 item 可以具有任意权重。（注：此处item和bucket是一个意思）
+  1）从 bucket 中最后一个 item 开始反向遍历整个 items ，执行 hash() 函数计算出一个随机数 w ；
+  2）将该随机数 w 乘以 bucket.sum_weight[i]，之后将结果右移16位；
+  3）判断右移 16 位后的结果和 bucket.item_weight[i]，若结果小于 bucket.item_weight[i] 则直接返回 bucket.h.items[i]，否则反向遍历 bucket 中下一个 item ；
+  4）若所有右移 16 位后的结果都大于 bucket.sum_weight[i]，则最终返回bucket.h.items[0] 。
+
+
+2.3 list 算法适用条件
+  1）适用于集群拓展类型。当增加 item 时，会产生最优的数据移动。因为在 list bucket 中增加一个 item 节点时，都会增加到 head 部，这时其他节点的 sum_weight 都不会发生变化，只需要将 old_head 上的 sum_weight 和 weight 之和添加到 new_head 的 sum_weight 就好了。这样时其他 item 之间不需要进行数据移动，其他的 item 上的数据只需要和 head 上比较就好，如果算的 w 值小于 head 的 weight，则需要移动到 head 上，否则还保存在原来的 item 上。这样就获得了最优最少的数据移动；
+  2）list bucket 存在一个缺点，就是在查找item节点时，只能顺序查找 时间复杂度为O(n)；
+
+
+
+3. Tree Bucket
+
+3.1 tree类型bucket的数据结构
+
+struct crush_bucket_tree {
+    // 通用bucket定义
+    struct crush_bucket h;  /* note: h.size is _tree_ size, not number of
+                   actual items */
+    // 记录 node_weights 中的所有节点个数（包括二叉树中间节点和叶子节点）
+    __u8 num_nodes;
+    // 除了 bucket 中 item 的权重值外，node_weights 中还包含一个二叉树的权重值，其中 bucket 中的 item 是树的叶子节点，二叉树的中间节点的权重值是左右两个子节点的权重值之和
+    __u32 *node_weights;
+};
+
+3.2 tree类型bucket算法分析
+
+static int height(int n)
+{
+    int h = 0;
+    while ((n & 1) == 0) {
+        h++;
+        n = n >> 1;
+    }
+    return h;
+}
+
+static int left(int x)
+{
+    int h = height(x);
+    return x - (1 << (h-1));
+}
+
+static int right(int x)
+{
+    int h = height(x);
+    return x + (1 << (h-1));
+}
+
+static int terminal(int x)
+{
+    return x & 1;
+}
+
+/* tree */
+static int bucket_tree_choose(struct crush_bucket_tree *bucket,
+			      int x, int r)
+{
+	int n;
+	__u32 w;
+	__u64 t;
+
+	/* start at root */
+	n = bucket->num_nodes >> 1;
+
+	while (!terminal(n)) {
+		int l;
+		/* pick point in [0, w) */
+		w = bucket->node_weights[n];
+		t = (__u64)crush_hash32_4(bucket->h.hash, x, n, r,
+					  bucket->h.id) * (__u64)w;
+		t = t >> 32;
+
+		/* descend to the left or right? */
+		l = left(n);
+		if (t < bucket->node_weights[l])
+			n = l;
+		else
+			n = right(n);
+	}
+
+	return bucket->h.items[n >> 1];
+}
+
+输入参数：
+  1）crush_bucket_tree 结构指针变量 bucket ；
+  2）待执行运算的输入值 x ；
+  3）输入值 x 的副本位置 r 。
+
+输出参数：
+  1）经过 tree 算法计算后的 bucket 中的 item 。
+
+算法分析：
+  Tree 类型的Bucket的子item组织成树的结构。每个OSD是叶子节点；根节点和中间节点是虚拟节点，其权重等于左右子树的权重之和。具体查找bucket的方法如下：
+  1）找到二叉树的根节点，即：n = bucket.num_nodes >> 1；
+  2）判断当前节点是否是叶子节点，若不是则从 bucket.node_weights[n] 中得到二叉树上对应中间节点的权重值，之后执行hash()函数的到一个随机数，之后将这个随机数乘以中间节点的权重值，再右移32位。将经过调整后的权重值与该中间节点左子树的权重值进行比较，若小于左子树的权重值则从左子树开始遍历，否则从右子树开始遍历；
+  3）当前节点到达叶子节点，则返回该叶子节点指定的item，即：bucket.h.items[n>>1]。
+
+
+3.3 tree算法适用条件。
+  1）使用 tree 算法时定位数据的时间复杂度为 O(log(n))，这使其适用于管理大得多设备数量或嵌套 buckets ；
+  2）树状 buckets 是一种适用于任何情况的buckets，兼具高性能与出色的重组效率。
+
+
+
+4. Straw Bucket
+
+4.1 straw类型bucket的数据结构
+
+struct crush_bucket_straw {
+    // 通用bucket定义
+    struct crush_bucket h;
+    // 保存 bucket 中所有 item 的权重值
+    __u32 *item_weights;   /* 16-bit fixed point */
+    // 保存根据 item 权重值计算出来的权重值
+    __u32 *straws;         /* 16-bit fixed point */
+};
+
+
+4.2 straw类型bucket算法分析
+
+/* straw */
+
+static int bucket_straw_choose(struct crush_bucket_straw *bucket,
+			       int x, int r)
+{
+	__u32 i;
+	int high = 0;
+	__u64 high_draw = 0;
+	__u64 draw;
+
+	for (i = 0; i < bucket->h.size; i++) {
+		draw = crush_hash32_3(bucket->h.hash, x, bucket->h.items[i], r);
+		draw &= 0xffff;
+		draw *= bucket->straws[i];
+		if (i == 0 || draw > high_draw) {
+			high = i;
+			high_draw = draw;
+		}
+	}
+	return bucket->h.items[high];
+}
+
+输入参数：
+  1）crush_bucket_tree 结构指针变量 bucket ；
+  2）待执行运算的输入值 x ；
+  3）输入值 x 的副本位置 r 。
+
+输出参数：
+  1）经过 straw 算法计算后的 bucket 中的 item 。
+
+算法分析：
+  1）顺序遍历 backet 中所有的 items，对于 bucket 中每一个 item 执行 hash() 算法计算出一个随机数，之后将该随机数与 bucket.staws[i] 相乘，得到一个修正后的随机值；
+  2）比较 bucket 中所有 items 经过 hash() 算法算出的修正后的随机值且找到最大的修正后的随机值；
+  3）返回最大的修正后的随机值位置所在的 item，即：bucket.h.item[high]。
+
+
+4.3 straw数组的生成过程分析
+
+  1）根据 bucket.item_weights[bucket.h.size] 数组，生成一个按照 items 权重值从小到大排序的数组 reverse[bucket.h.size] 且 reverse[bucket.h.size] 中保存的是按序排列的 item 权重值的下标；
+
+  2）初始化计算straw算法所使用的变量。
+    numleft=bucket.h.size;
+    straw=1.0;
+    lastw=0;
+    wbelow=0;
+
+  3）遍历整个items，按照如下算法计算items对应的straw值。
+    A）对于bucket.item_weights[reverse[i]]==0，则straw[reverse[i]]=0；
+    B）设置straw值。bucket.straw[reverse[i]]=straw*0x1000；
+    C）变量i＋1；
+    D）计算wbelow值。wbelow=(bucket.item_weights[reverser[i-1])-lastw)*numleft；
+    E）变量numleft-1；
+    F）计算wnext值。wnext=numleft*(bucket.item_weights[reverse[i]-bucket.item_weight[revese[i-1])；
+    G）计算pbelow值。pbelow=wbelow/(wbelow+wnext)；
+    H）计算straw值。straw=pow(1/pbelow,1/numleft)；
+    I）计算lastw值。lastw=bucket.item_weights[reverse[i-1]]；
+
+  对于bucket中所有的items来说，权重越大，计算出来的straw值就越大；
+  从算法来看，计算item的straw值与item的权重值以及item之前的权重值有关，因此在修改bucket中某一个item的权重值时会影响该item及其前后items的straw值；
+
+
+4.4 straw算法适用条件
+
+  1）考虑权重对数据分布的影响，即：权重值高的item来说，被选中的概率就大，落在权重值高的item的数据越多；
+  2）straw类型的buckets可以为子树之间的数据移动提供最优的解决方案；
+
+
+
+5. Straw2 Bucket
+
+5.1 straw2类型bucket的数据结构
+
+struct crush_bucket_straw2 {
+    // 通用bucket定义
+    struct crush_bucket h;
+    // 保存bucket中所有item的权重值
+    __u32 *item_weights;   /* 16-bit fixed point */
+};
+
+
+5.2 straw2类型bucket算法分析。
+
+/*
+ * straw2
+ *
+ * for reference, see:
+ *
+ * http://en.wikipedia.org/wiki/Exponential_distribution#Distribution_of_the_minimum_of_exponential_random_variables
+ *
+ */
+
+static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
+				int x, int r)
+{
+	unsigned i, high = 0;
+	unsigned u;
+	unsigned w;
+	__s64 ln, draw, high_draw = 0;
+
+	for (i = 0; i < bucket->h.size; i++) {
+		w = bucket->item_weights[i];
+		if (w) {
+			u = crush_hash32_3(bucket->h.hash, x,
+					   bucket->h.items[i], r);
+			u &= 0xffff;
+
+			/*
+			 * for some reason slightly less than 0x10000 produces
+			 * a slightly more accurate distribution... probably a
+			 * rounding effect.
+			 *
+			 * the natural log lookup table maps [0,0xffff]
+			 * (corresponding to real numbers [1/0x10000, 1] to
+			 * [0, 0xffffffffffff] (corresponding to real numbers
+			 * [-11.090355,0]).
+			 */
+			ln = crush_ln(u) - 0x1000000000000ll;
+
+			/*
+			 * divide by 16.16 fixed-point weight.  note
+			 * that the ln value is negative, so a larger
+			 * weight means a larger (less negative) value
+			 * for draw.
+			 */
+			draw = ln / w;
+		} else {
+			draw = INT64_MIN;
+		}
+
+		if (i == 0 || draw > high_draw) {
+			high = i;
+			high_draw = draw;
+		}
+	}
+	return bucket->h.items[high];
+}
+
+
+输入参数：
+  1）crush_bucket_tree 结构指针变量 bucket ；
+  2）待执行运算的输入值 x ；
+  3）输入值 x 的副本位置 r 。
+
+输出参数：
+  1）经过 straw2 算法计算后的 bucket 中的 item 。
+
+算法分析：
+  1）遍历整个bucket的所有items，得到items对应的权重值；
+  2）对于非零权重值来说，首先执行hash()函数计算出一个随机数，之后将该随机数作为参数调用最小指数随机变量分布算法得到的结果再减去0x1000000000000，最后将该结果除以item权重值得到item对应的最终值(draw)。对于权重值为零来说，最终值(draw)为最小值；
+  3）比较整个bucket中所有items计算出来的最终值(draw)，取最终值最大的item，即：bucket.h.items[high]；
+
+从算法来看，计算item的straw值只与item的权重值有关，与bucket中其它items的权重值无关。因此在修改bucket中某一个item的权重值时不会影响该bucket中其它items的straw值；
+
+
+5.3 straw2算法适用条件。          
+  1）考虑权重对数据分布的影响，即：权重值高的item来说，被选中的概率就大，落在权重值高的item的数据越多；
+  2）straw类型的buckets可以为子树之间的数据移动提供最优的解决方案；
+  3）适合bucket中的items权重动态变化的场景；
+
+
+------------------------------------
+
+3. Tree Bucket
+    此种类型的Bucket的子item组织成树的结构。每个OSD是叶子节点；根节点和中间节点是虚拟节点，其权重等于左右子树的权重之和。具体查找bucket的方法如下：
+    1> 从根节点开始遍历
+    2> 设左子树权重为W1，而当前节点权重为Wn，然后根据 hash(PG_ID, r, bucket_id) 计算得到一个 [0-1] 之间的值v
+      a> 若v在 [0-W1/Wn) 之间，那么在左子树中继续选择item
+      b> 否则在右子树中选择item
+      c> 一直遍历，直至叶子节点
+    由以上分析可知，Tree Bucket的查找复杂度为 O(log n)
+
+    这种Bucket在实际中可以考虑使用。其选择速度是很快的，而在添加和删除硬件设备时，速度也还可以。
+
+
+4. Straw Bucket
+    此种类型的bucket选择算法是Ceph的默认选择算法。具体如下：
+    1> 函数 f(Wi) 是和item的权重Wi相关的函数，决定了每个item被选中的概率；权重(weight)越高的item则被选中的概率越大；
+    注意，这里的weight并不是相当于磁盘可用空间，而是相当于总空间，因此是固定不变的。
+    2> 给每个item计算一个长度。
+
+length = f(Wi) * hash(PG_ID, r, bucket_id)
+
+   然后选择length最大的item.
+   因为straw在增删设备时的表现最佳，而在选择速度上也还可以，因此，它被选作默认的bucket选择算法。
+
+
+
+5. Straw2 Bucket
+    此种类型的bucket选择算法是对 Straw 选择算法进行修正的新算法。具体如下：
+
+
+
+以上各个bucket选择算法的对比情况见下表：
+ -----------------------------------------------------------------------
+| Bucket选择算法 | 选择的速度 | item添加的容易程度 | item删除的容易程度 |
+|-----------------------------------------------------------------------|
+| uniform        |  O(1)      | poor               | poor               |
+|-----------------------------------------------------------------------|
+| list           |  O(n)      | optimal            | poor               |
+|-----------------------------------------------------------------------|
+| tree           |  O(log n)  | good               | good               |
+|-----------------------------------------------------------------------|
+| straw          |  O(n)      | better             | better             |
+|-----------------------------------------------------------------------|
+| straw2         |  O(n)      | optimal            | optimal            |
+ -----------------------------------------------------------------------
+
