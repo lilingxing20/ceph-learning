@@ -17,7 +17,7 @@ struct crush_bucket {
     __u32 weight;    /* 16-bit fixed point */
     // bucket 中包含的items的数量
     __u32 size;      /* num items */
-    // bucket 中包含的items的内容
+    // bucket 子 bucket 在 crush_bucket 结构 buckets 数组的下标，其子 item 的 crush_bucket 结构体都统一保存在 crush map 结构体中的 buckets 数组中，这里只保存其在数组中的下标
     __s32 *items;
 
     /*
@@ -52,67 +52,67 @@ struct crush_bucket_uniform {
 
 /* uniform */
 static int bucket_uniform_choose(struct crush_bucket_uniform *bucket,
-				 int x, int r)
+                                 int x, int r)
 {
-	return bucket_perm_choose(&bucket->h, x, r);
+    return bucket_perm_choose(&bucket->h, x, r);
 }
 static int bucket_perm_choose(struct crush_bucket *bucket,
-			      int x, int r)
+                              int x, int r)
 {
-	unsigned int pr = r % bucket->size;
-	unsigned int i, s;
+    unsigned int pr = r % bucket->size;
+    unsigned int i, s;
 
-	/* start a new permutation if @x has changed */
-	if (bucket->perm_x != (__u32)x || bucket->perm_n == 0) {
-		dprintk("bucket %d new x=%d\n", bucket->id, x);
-		bucket->perm_x = x;
+    /* start a new permutation if @x has changed */
+    if (bucket->perm_x != (__u32)x || bucket->perm_n == 0) {
+        dprintk("bucket %d new x=%d\n", bucket->id, x);
+        bucket->perm_x = x;
 
-		/* optimize common r=0 case */
-		if (pr == 0) {
-			s = crush_hash32_3(bucket->hash, x, bucket->id, 0) %
-				bucket->size;
-			bucket->perm[0] = s;
-			bucket->perm_n = 0xffff;   /* magic value, see below */
-			goto out;
-		}
+        /* optimize common r=0 case */
+        if (pr == 0) {
+            s = crush_hash32_3(bucket->hash, x, bucket->id, 0) %
+                bucket->size;
+            bucket->perm[0] = s;
+            bucket->perm_n = 0xffff;   /* magic value, see below */
+            goto out;
+        }
 
-		for (i = 0; i < bucket->size; i++)
-			bucket->perm[i] = i;
-		bucket->perm_n = 0;
-	} else if (bucket->perm_n == 0xffff) {
-		/* clean up after the r=0 case above */
-		for (i = 1; i < bucket->size; i++)
-			bucket->perm[i] = i;
-		bucket->perm[bucket->perm[0]] = 0;
-		bucket->perm_n = 1;
-	}
+        for (i = 0; i < bucket->size; i++)
+            bucket->perm[i] = i;
+        bucket->perm_n = 0;
+    } else if (bucket->perm_n == 0xffff) {
+        /* clean up after the r=0 case above */
+        for (i = 1; i < bucket->size; i++)
+            bucket->perm[i] = i;
+        bucket->perm[bucket->perm[0]] = 0;
+        bucket->perm_n = 1;
+    }
 
-	/* calculate permutation up to pr */
-	for (i = 0; i < bucket->perm_n; i++)
-		dprintk(" perm_choose have %d: %d\n", i, bucket->perm[i]);
-	while (bucket->perm_n <= pr) {
-		unsigned int p = bucket->perm_n;
-		/* no point in swapping the final entry */
-		if (p < bucket->size - 1) {
-			i = crush_hash32_3(bucket->hash, x, bucket->id, p) %
-				(bucket->size - p);
-			if (i) {
-				unsigned int t = bucket->perm[p + i];
-				bucket->perm[p + i] = bucket->perm[p];
-				bucket->perm[p] = t;
-			}
-			dprintk(" perm_choose swap %d with %d\n", p, p+i);
-		}
-		bucket->perm_n++;
-	}
-	for (i = 0; i < bucket->size; i++)
-		dprintk(" perm_choose  %d: %d\n", i, bucket->perm[i]);
+    /* calculate permutation up to pr */
+    for (i = 0; i < bucket->perm_n; i++)
+        dprintk(" perm_choose have %d: %d\n", i, bucket->perm[i]);
+    while (bucket->perm_n <= pr) {
+        unsigned int p = bucket->perm_n;
+        /* no point in swapping the final entry */
+        if (p < bucket->size - 1) {
+            i = crush_hash32_3(bucket->hash, x, bucket->id, p) %
+                (bucket->size - p);
+            if (i) {
+                unsigned int t = bucket->perm[p + i];
+                bucket->perm[p + i] = bucket->perm[p];
+                bucket->perm[p] = t;
+            }
+            dprintk(" perm_choose swap %d with %d\n", p, p+i);
+        }
+        bucket->perm_n++;
+    }
+    for (i = 0; i < bucket->size; i++)
+        dprintk(" perm_choose  %d: %d\n", i, bucket->perm[i]);
 
-	s = bucket->perm[pr];
+    s = bucket->perm[pr];
 out:
-	dprintk(" perm_choose %d sz=%d x=%d r=%d (%d) s=%d\n", bucket->id,
-		bucket->size, x, r, pr, s);
-	return bucket->items[s];
+    dprintk(" perm_choose %d sz=%d x=%d r=%d (%d) s=%d\n", bucket->id,
+        bucket->size, x, r, pr, s);
+    return bucket->items[s];
 }
 
 输入参数：
@@ -154,27 +154,27 @@ struct crush_bucket_list {
 
 /* list */
 static int bucket_list_choose(struct crush_bucket_list *bucket,
-			      int x, int r)
+                              int x, int r)
 {
-	int i;
+    int i;
 
-	for (i = bucket->h.size-1; i >= 0; i--) {
-		__u64 w = crush_hash32_4(bucket->h.hash,x, bucket->h.items[i],
-					 r, bucket->h.id);
-		w &= 0xffff;
-		dprintk("list_choose i=%d x=%d r=%d item %d weight %x "
-			"sw %x rand %llx",
-			i, x, r, bucket->h.items[i], bucket->item_weights[i],
-			bucket->sum_weights[i], w);
-		w *= bucket->sum_weights[i];
-		w = w >> 16;
-		/*dprintk(" scaled %llx\n", w);*/
-		if (w < bucket->item_weights[i])
-			return bucket->h.items[i];
-	}
+    for (i = bucket->h.size-1; i >= 0; i--) {
+        __u64 w = crush_hash32_4(bucket->h.hash,x, bucket->h.items[i],
+                     r, bucket->h.id);
+        w &= 0xffff;
+        dprintk("list_choose i=%d x=%d r=%d item %d weight %x "
+            "sw %x rand %llx",
+            i, x, r, bucket->h.items[i], bucket->item_weights[i],
+            bucket->sum_weights[i], w);
+        w *= bucket->sum_weights[i];
+        w = w >> 16;
+        /*dprintk(" scaled %llx\n", w);*/
+        if (w < bucket->item_weights[i])
+            return bucket->h.items[i];
+    }
 
-	dprintk("bad list sums for bucket %d\n", bucket->h.id);
-	return bucket->h.items[0];
+    dprintk("bad list sums for bucket %d\n", bucket->h.id);
+    return bucket->h.items[0];
 }
 
 输入参数：
@@ -244,32 +244,32 @@ static int terminal(int x)
 
 /* tree */
 static int bucket_tree_choose(struct crush_bucket_tree *bucket,
-			      int x, int r)
+                              int x, int r)
 {
-	int n;
-	__u32 w;
-	__u64 t;
+    int n;
+    __u32 w;
+    __u64 t;
 
-	/* start at root */
-	n = bucket->num_nodes >> 1;
+    /* start at root */
+    n = bucket->num_nodes >> 1;
 
-	while (!terminal(n)) {
-		int l;
-		/* pick point in [0, w) */
-		w = bucket->node_weights[n];
-		t = (__u64)crush_hash32_4(bucket->h.hash, x, n, r,
-					  bucket->h.id) * (__u64)w;
-		t = t >> 32;
+    while (!terminal(n)) {
+        int l;
+        /* pick point in [0, w) */
+        w = bucket->node_weights[n];
+        t = (__u64)crush_hash32_4(bucket->h.hash, x, n, r,
+                      bucket->h.id) * (__u64)w;
+        t = t >> 32;
 
-		/* descend to the left or right? */
-		l = left(n);
-		if (t < bucket->node_weights[l])
-			n = l;
-		else
-			n = right(n);
-	}
+        /* descend to the left or right? */
+        l = left(n);
+        if (t < bucket->node_weights[l])
+            n = l;
+        else
+            n = right(n);
+    }
 
-	return bucket->h.items[n >> 1];
+    return bucket->h.items[n >> 1];
 }
 
 输入参数：
@@ -312,23 +312,26 @@ struct crush_bucket_straw {
 /* straw */
 
 static int bucket_straw_choose(struct crush_bucket_straw *bucket,
-			       int x, int r)
+                               int x, int r)
 {
-	__u32 i;
-	int high = 0;
-	__u64 high_draw = 0;
-	__u64 draw;
+    __u32 i;
+    int high = 0;
+    __u64 high_draw = 0;
+    __u64 draw;
 
-	for (i = 0; i < bucket->h.size; i++) {
-		draw = crush_hash32_3(bucket->h.hash, x, bucket->h.items[i], r);
-		draw &= 0xffff;
-		draw *= bucket->straws[i];
-		if (i == 0 || draw > high_draw) {
-			high = i;
-			high_draw = draw;
-		}
-	}
-	return bucket->h.items[high];
+    for (i = 0; i < bucket->h.size; i++) {
+        // 1) 对每个item计算hash值
+        draw = crush_hash32_3(bucket->h.hash, x, bucket->h.items[i], r);
+        // 2) 获取低 16 位，并乘以权重相关的修正值
+        draw &= 0xffff;
+        draw *= bucket->straws[i];
+        // 3) 获取 draw 值最大的 item 为选中的 item
+        if (i == 0 || draw > high_draw) {
+            high = i;
+            high_draw = draw;
+        }
+    }
+    return bucket->h.items[high];
 }
 
 输入参数：
@@ -346,28 +349,29 @@ static int bucket_straw_choose(struct crush_bucket_straw *bucket,
 
 
 4.3 straw数组的生成过程分析
+  hmmer_ceph/src/crush/builder.c:crush_calc_straw
 
   1）根据 bucket.item_weights[bucket.h.size] 数组，生成一个按照 items 权重值从小到大排序的数组 reverse[bucket.h.size] 且 reverse[bucket.h.size] 中保存的是按序排列的 item 权重值的下标；
 
   2）初始化计算straw算法所使用的变量。
-    numleft=bucket.h.size;
-    straw=1.0;
-    lastw=0;
-    wbelow=0;
+    numleft = bucket.h.size;
+    straw = 1.0;
+    wbelow = 0;
+    lastw = 0;
 
-  3）遍历整个items，按照如下算法计算items对应的straw值。
-    A）对于bucket.item_weights[reverse[i]]==0，则straw[reverse[i]]=0；
-    B）设置straw值。bucket.straw[reverse[i]]=straw*0x1000；
-    C）变量i＋1；
-    D）计算wbelow值。wbelow=(bucket.item_weights[reverser[i-1])-lastw)*numleft；
-    E）变量numleft-1；
-    F）计算wnext值。wnext=numleft*(bucket.item_weights[reverse[i]-bucket.item_weight[revese[i-1])；
-    G）计算pbelow值。pbelow=wbelow/(wbelow+wnext)；
-    H）计算straw值。straw=pow(1/pbelow,1/numleft)；
-    I）计算lastw值。lastw=bucket.item_weights[reverse[i-1]]；
+  3）遍历整个 items，按照如下算法计算items对应的straw值。
+    a）对于 bucket.item_weights[reverse[i]] == 0，则 straw[reverse[i]] = 0 ；
+    b）设置 straw 值：bucket.straw[reverse[i]] = straw * 0x10000 ；
+    c）变量 i + 1 ，当 i == size 时结束；
+    d）计算 wbelow 值: wbelow += (bucket.item_weights[reverser[i-1]) - lastw) * numleft ；
+    e）变量 numleft - 1 ；
+    f）计算 wnext 值：wnext = numleft * (bucket.item_weights[reverse[i] - bucket.item_weight[revese[i-1]) ；
+    g）计算 pbelow 值：pbelow = wbelow / (wbelow + wnext) ；
+    h）计算 straw 值：straw *= pow(1 / pbelow, 1 / numleft) ；
+    i）计算 lastw 值：lastw = bucket.item_weights[reverse[i-1]] ；
 
   对于bucket中所有的items来说，权重越大，计算出来的straw值就越大；
-  从算法来看，计算item的straw值与item的权重值以及item之前的权重值有关，因此在修改bucket中某一个item的权重值时会影响该item及其前后items的straw值；
+  从算法来看，计算 item 的 straw 值与 item 的权重值以及 item 之前的权重值有关，因此在修改 bucket 中某一个 item 的权重值时会影响该 item 及其前后 items 的 straw 值；
 
 
 4.4 straw算法适用条件
@@ -401,49 +405,54 @@ struct crush_bucket_straw2 {
  */
 
 static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
-				int x, int r)
+                                int x, int r)
 {
-	unsigned i, high = 0;
-	unsigned u;
-	unsigned w;
-	__s64 ln, draw, high_draw = 0;
+    unsigned i, high = 0;
+    unsigned u;
+    unsigned w;
+    __s64 ln, draw, high_draw = 0;
 
-	for (i = 0; i < bucket->h.size; i++) {
-		w = bucket->item_weights[i];
-		if (w) {
-			u = crush_hash32_3(bucket->h.hash, x,
-					   bucket->h.items[i], r);
-			u &= 0xffff;
+    for (i = 0; i < bucket->h.size; i++) {
+        w = bucket->item_weights[i];
+        if (w) {
+            // 1) 对每个item计算hash值
+            u = crush_hash32_3(bucket->h.hash, x,
+                       bucket->h.items[i], r);
+            // 2) 获取低 16 位
+            u &= 0xffff;
 
-			/*
-			 * for some reason slightly less than 0x10000 produces
-			 * a slightly more accurate distribution... probably a
-			 * rounding effect.
-			 *
-			 * the natural log lookup table maps [0,0xffff]
-			 * (corresponding to real numbers [1/0x10000, 1] to
-			 * [0, 0xffffffffffff] (corresponding to real numbers
-			 * [-11.090355,0]).
-			 */
-			ln = crush_ln(u) - 0x1000000000000ll;
+            /*
+             * for some reason slightly less than 0x10000 produces
+             * a slightly more accurate distribution... probably a
+             * rounding effect.
+             *
+             * the natural log lookup table maps [0,0xffff]
+             * (corresponding to real numbers [1/0x10000, 1] to
+             * [0, 0xffffffffffff] (corresponding to real numbers
+             * [-11.090355,0]).
+             */
+            // 3) 最小指数随机变量分布算法
+            ln = crush_ln(u) - 0x1000000000000ll;
 
-			/*
-			 * divide by 16.16 fixed-point weight.  note
-			 * that the ln value is negative, so a larger
-			 * weight means a larger (less negative) value
-			 * for draw.
-			 */
-			draw = ln / w;
-		} else {
-			draw = INT64_MIN;
-		}
+            /*
+             * divide by 16.16 fixed-point weight.  note
+             * that the ln value is negative, so a larger
+             * weight means a larger (less negative) value
+             * for draw.
+             */
+            // 4) 将随机数除以item权重值得到draw
+            draw = ln / w;
+        } else {
+            draw = INT64_MIN;
+        }
 
-		if (i == 0 || draw > high_draw) {
-			high = i;
-			high_draw = draw;
-		}
-	}
-	return bucket->h.items[high];
+        // 5) 获取 draw 值最大的 item 为选中的 item
+        if (i == 0 || draw > high_draw) {
+            high = i;
+            high_draw = draw;
+        }
+    }
+    return bucket->h.items[high];
 }
 
 
@@ -457,7 +466,7 @@ static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
 
 算法分析：
   1）遍历整个bucket的所有items，得到items对应的权重值；
-  2）对于非零权重值来说，首先执行hash()函数计算出一个随机数，之后将该随机数作为参数调用最小指数随机变量分布算法得到的结果再减去0x1000000000000，最后将该结果除以item权重值得到item对应的最终值(draw)。对于权重值为零来说，最终值(draw)为最小值；
+  2）对于非零权重值来说，首先执行hash()函数计算出一个随机数，之后将该随机数作为参数调用最小指数随机变量分布算法得到的结果再减去0x10000000000，最后将该结果除以item权重值得到item对应的最终值(draw)。对于权重值为零来说，最终值(draw)为最小值；
   3）比较整个bucket中所有items计算出来的最终值(draw)，取最终值最大的item，即：bucket.h.items[high]；
 
 从算法来看，计算item的straw值只与item的权重值有关，与bucket中其它items的权重值无关。因此在修改bucket中某一个item的权重值时不会影响该bucket中其它items的straw值；
@@ -469,39 +478,8 @@ static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
   3）适合bucket中的items权重动态变化的场景；
 
 
-------------------------------------
 
-3. Tree Bucket
-    此种类型的Bucket的子item组织成树的结构。每个OSD是叶子节点；根节点和中间节点是虚拟节点，其权重等于左右子树的权重之和。具体查找bucket的方法如下：
-    1> 从根节点开始遍历
-    2> 设左子树权重为W1，而当前节点权重为Wn，然后根据 hash(PG_ID, r, bucket_id) 计算得到一个 [0-1] 之间的值v
-      a> 若v在 [0-W1/Wn) 之间，那么在左子树中继续选择item
-      b> 否则在右子树中选择item
-      c> 一直遍历，直至叶子节点
-    由以上分析可知，Tree Bucket的查找复杂度为 O(log n)
-
-    这种Bucket在实际中可以考虑使用。其选择速度是很快的，而在添加和删除硬件设备时，速度也还可以。
-
-
-4. Straw Bucket
-    此种类型的bucket选择算法是Ceph的默认选择算法。具体如下：
-    1> 函数 f(Wi) 是和item的权重Wi相关的函数，决定了每个item被选中的概率；权重(weight)越高的item则被选中的概率越大；
-    注意，这里的weight并不是相当于磁盘可用空间，而是相当于总空间，因此是固定不变的。
-    2> 给每个item计算一个长度。
-
-length = f(Wi) * hash(PG_ID, r, bucket_id)
-
-   然后选择length最大的item.
-   因为straw在增删设备时的表现最佳，而在选择速度上也还可以，因此，它被选作默认的bucket选择算法。
-
-
-
-5. Straw2 Bucket
-    此种类型的bucket选择算法是对 Straw 选择算法进行修正的新算法。具体如下：
-
-
-
-以上各个bucket选择算法的对比情况见下表：
+6. 以上各个bucket选择算法的对比情况见下表：
  -----------------------------------------------------------------------
 | Bucket选择算法 | 选择的速度 | item添加的容易程度 | item删除的容易程度 |
 |-----------------------------------------------------------------------|
