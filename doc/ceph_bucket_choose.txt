@@ -494,3 +494,6 @@ static int bucket_straw2_choose(struct crush_bucket_straw2 *bucket,
 | straw2         |  O(n)      | optimal            | optimal            |
  -----------------------------------------------------------------------
 
+
+参考：https://my.oschina.net/linuxhunter/blog/639016?p=1
+
