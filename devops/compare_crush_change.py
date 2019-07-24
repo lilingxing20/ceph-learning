@@ -89,7 +89,8 @@
 # |    total_movement_bytes: 154752669853        
 # |     total_remap_counter: 18                  
 # |         bandwidth(Mbps): 100
-# 
+#
+
 
 import ast
 import json
@@ -147,41 +148,20 @@ def get_pg_info(pg_dump_info):
     return pg_data, pg_objects
 
 
-def get_map_pgs_dump_info(map_pgs_dump):
-    pg_data = {}
-    pg_objects = {}
-    pg_location = {}
-    for line in map_pgs_dump:
-        if line[0].isdigit():
-            pg_id = line.split('\t')[0]
-            osd_set = line.split('\t')[1].strip('[]').split(',')
-            pg_location[pg_id] = osd_set
-        elif line.startswith('#osd'):
-            break
-
-    return pg_location
-
-
-def calc_osd_in_out_pgs(original_map_pgs_dump, new_map_pgs_dump):
-    original_pgdump = get_map_pgs_dump_info(original_map_pgs_dump)
-    new_pgdump = get_map_pgs_dump_info(new_map_pgs_dump)
-    osd_counter = {}
-    for pg_id in new_pgdump:
-        o_pg_loc = original_pgdump[pg_id]
-        n_pg_loc = new_pgdump[pg_id]
-        for a,b in zip(o_pg_loc, n_pg_loc):
-            if a == b:
-                continue
-            if not osd_counter.get(a, None):
-                osd_counter[a] = {'out': 1, 'out_pg': [pg_id], 'in': 0, 'in_pg': []}
-            else:
-                osd_counter[a]['out'] += 1
-                osd_counter[a]['out_pg'].append(pg_id)
-            if not osd_counter.get(b, None):
-                osd_counter[b] = {'out': 0, 'out_pg': [], 'in': 1, 'in_pg': [pg_id]}
-            else:
-                osd_counter[b]['in'] += 1
-                osd_counter[b]['in_pg'].append(pg_id)
+def calc_osd_in_out_pgs(osd_counter, pg_id, o_pg_loc, n_pg_loc):
+    for a,b in zip(o_pg_loc, n_pg_loc):
+        if a == b:
+            continue
+        if not osd_counter.get(a, None):
+            osd_counter[a] = {'out': 1, 'out_pg': [pg_id], 'in': 0, 'in_pg': []}
+        else:
+            osd_counter[a]['out'] += 1
+            osd_counter[a]['out_pg'].append(pg_id)
+        if not osd_counter.get(b, None):
+            osd_counter[b] = {'out': 0, 'out_pg': [], 'in': 1, 'in_pg': [pg_id]}
+        else:
+            osd_counter[b]['in'] += 1
+            osd_counter[b]['in_pg'].append(pg_id)
     return osd_counter
 
 
@@ -200,6 +180,7 @@ def diff_output(original_map_pgs_dump, new_map_pgs_dump, pools, original_pg_dump
     """
     """
     results = {}
+    osd_counter = {}
 
     pg_data, pg_objects = get_pg_info(original_pg_dump_file)
 
@@ -225,11 +206,6 @@ def diff_output(original_map_pgs_dump, new_map_pgs_dump, pools, original_pg_dump
             original_mappings = ast.literal_eval(orig_i.split('\t')[1])
             new_mappings = ast.literal_eval(new_i.split('\t')[1])
             intersection = list(set(original_mappings).intersection(set(new_mappings)))
-            if len(intersection) != 2:
-                _remap_pg_num += 1
-                pg_remaps = calc_pg_remap(original_mappings, new_mappings)
-                print _columns_four.format(pg_id, original_mappings, new_mappings, pg_remaps)
-
             osd_movement_for_this_pg = int(pools[pool_id]['pool_size']) - len(intersection)
             osd_data_movement_for_this_pg = int(osd_movement_for_this_pg) * int(pg_data[pg_id])
             osd_object_movement_for_this_pg = int(osd_movement_for_this_pg) * int(pg_objects[pg_id])
@@ -238,12 +214,18 @@ def diff_output(original_map_pgs_dump, new_map_pgs_dump, pools, original_pg_dump
             results[pool_name]['osd_bytes_movement'] += int(osd_data_movement_for_this_pg)
             results[pool_name]['osd_objects_movement'] += int(osd_object_movement_for_this_pg)
 
+            if len(intersection) != len(original_mappings):
+                _remap_pg_num += 1
+                pg_remaps = calc_pg_remap(original_mappings, new_mappings)
+                osd_counter = calc_osd_in_out_pgs(osd_counter, pg_id, original_mappings, new_mappings)
+                print _columns_four.format(pg_id, original_mappings, new_mappings, pg_remaps)
+
         elif orig_i.startswith('#osd'):
             break
     print("Total Remap PG num: %s" % _remap_pg_num)
     print("")
 
-    return results
+    return results, osd_counter
 
 
 def osdmaptool_test_map_pgs_dump1(osdmap_file):
@@ -320,10 +302,10 @@ def test_map_pgs_dump(original_osdmap_file, original_pg_dump_file, new_crushmap_
     pools = get_pools_info(original_osdmap_file)
 
     # diff pgs dump info
-    results = diff_output(original_map_pgs_dump, new_map_pgs_dump, pools, original_pg_dump_file)
+    results, osd_counter = diff_output(original_map_pgs_dump, new_map_pgs_dump, pools, original_pg_dump_file)
 
     # calc osd in/out pgs
-    osd_counter = calc_osd_in_out_pgs(original_map_pgs_dump, new_map_pgs_dump)
+    #osd_counter = calc_osd_in_out_pgs(original_map_pgs_dump, new_map_pgs_dump)
 
     return results, osd_counter
 
