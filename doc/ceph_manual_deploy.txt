@@ -217,65 +217,63 @@ log      =internal log           bsize=4096   blocks=2560, version=2
 realtime =none                   extsz=4096   blocks=0, rtextents=0
 [root@node242 ~]# mount /dev/vdb2 /var/lib/ceph/osd/ceph-0/
 
+配置 osd 日志盘
+[root@node242 ~]# ll /dev/disk/by-partuuid/
+total 0
+lrwxrwxrwx 1 root root 10 Aug  1 11:18 b0d06586-00e8-42fe-bdad-9b47abee374e -> ../../vdb1
+lrwxrwxrwx 1 root root 10 Aug  1 11:12 dce5f167-fc11-45b0-8cf2-d16b8923a1b9 -> ../../vdb2
+[root@node242 ~]# ln -s /dev/disk/by-partuuid/b0d06586-00e8-42fe-bdad-9b47abee374e /var/lib/ceph/osd/ceph-0/journal
+[root@node242 ~]# ls -l /var/lib/ceph/osd/ceph-0/
+total 0
+lrwxrwxrwx 1 root root 58 Aug  1 11:19 journal -> /dev/disk/by-partuuid/b0d06586-00e8-42fe-bdad-9b47abee374e
+
 创建 osd.0 的 keyring 文件
 [root@node242 ~]# ceph-osd -i 0 --mkfs --mkkey
-2019-08-01 08:59:23.501387 7ff977bbd880 -1 journal FileJournal::_open: disabling aio for non-block journal.  Use journal_force_aio to force use of aio anyway
-2019-08-01 08:59:23.529206 7ff977bbd880 -1 journal FileJournal::_open: disabling aio for non-block journal.  Use journal_force_aio to force use of aio anyway
-2019-08-01 08:59:23.530340 7ff977bbd880 -1 filestore(/var/lib/ceph/osd/ceph-0) could not find 23c2fcde/osd_superblock/0//-1 in index: (2) No such file or directory
-2019-08-01 08:59:23.544800 7ff977bbd880 -1 created object store /var/lib/ceph/osd/ceph-0 journal /var/lib/ceph/osd/ceph-0/journal for osd.0 fsid 346436e3-a7f4-4fd9-9694-e9830faec4d5
-2019-08-01 08:59:23.544887 7ff977bbd880 -1 auth: error reading file: /var/lib/ceph/osd/ceph-0/keyring: can't open /var/lib/ceph/osd/ceph-0/keyring: (2) No such file or directory
-2019-08-01 08:59:23.544996 7ff977bbd880 -1 created new key in keyring /var/lib/ceph/osd/ceph-0/keyring
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+2019-08-01 11:19:48.919616 7fd45e81d880 -1 journal check: ondisk fsid d1721d05-684d-483b-becb-5c07564f364c doesn't match expected 8558e48b-5363-4383-94c2-7f303676ddd5, invalid (someone else's?) journal
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+2019-08-01 11:19:48.936239 7fd45e81d880 -1 filestore(/var/lib/ceph/osd/ceph-0) could not find 23c2fcde/osd_superblock/0//-1 in index: (2) No such file or directory
+2019-08-01 11:19:48.947600 7fd45e81d880 -1 created object store /var/lib/ceph/osd/ceph-0 journal /var/lib/ceph/osd/ceph-0/journal for osd.0 fsid 346436e3-a7f4-4fd9-9694-e9830faec4d5
+2019-08-01 11:19:48.947663 7fd45e81d880 -1 auth: error reading file: /var/lib/ceph/osd/ceph-0/keyring: can't open /var/lib/ceph/osd/ceph-0/keyring: (2) No such file or directory
+2019-08-01 11:19:48.947757 7fd45e81d880 -1 created new key in keyring /var/lib/ceph/osd/ceph-0/keyring
+[root@node242 ~]# ls -l /var/lib/ceph/osd/ceph-0/
+total 32
+-rw-r--r-- 1 root root 37 Aug  1 11:19 ceph_fsid
+drwxr-xr-x 4 root root 61 Aug  1 11:19 current
+-rw-r--r-- 1 root root 37 Aug  1 11:19 fsid
+lrwxrwxrwx 1 root root 58 Aug  1 11:19 journal -> /dev/disk/by-partuuid/b0d06586-00e8-42fe-bdad-9b47abee374e
+-rw------- 1 root root 56 Aug  1 11:19 keyring
+-rw-r--r-- 1 root root 21 Aug  1 11:19 magic
+-rw-r--r-- 1 root root  6 Aug  1 11:19 ready
+-rw-r--r-- 1 root root  4 Aug  1 11:19 store_version
+-rw-r--r-- 1 root root 53 Aug  1 11:19 superblock
+-rw-r--r-- 1 root root  2 Aug  1 11:19 whoami
 
 添加 osd.0 的认证信息
 [root@node242 ~]# ceph auth add osd.0 osd 'allow *' mon 'allow rwx' -i /var/lib/ceph/osd/ceph-0/keyring
 added key for osd.0
 
-链接到 osd 日志盘
-[root@node242 ~]# rm -f /var/lib/ceph/osd/ceph-0/journal 
-[root@node242 ~]# ls -l /dev/disk/by-partuuid/
-total 0
-lrwxrwxrwx 1 root root 10 Aug  1 08:58 42297590-7638-4aec-8273-349fe7f7c5ab -> ../../vdd2
-lrwxrwxrwx 1 root root 10 Jul 31 23:17 4b45febe-c7e1-4562-b9ba-081f879a4d34 -> ../../vdc1
-lrwxrwxrwx 1 root root 10 Jul 31 22:58 4bd32cd6-2126-4e40-9487-4016e8b3a819 -> ../../vdc2
-lrwxrwxrwx 1 root root 10 Jul 31 22:56 dfb54491-9020-49f2-b697-83f3fc8859d6 -> ../../vdd1
-lrwxrwxrwx 1 root root 10 Jul 31 22:40 f920d451-24c6-4748-a2ed-6f286db89718 -> ../../vdb1
-[root@node242 ~]# ln -s /dev/disk/by-partuuid/f920d451-24c6-4748-a2ed-6f286db89718 /var/lib/ceph/osd/ceph-0/journal 
-[root@node242 ~]# ls -l /var/lib/ceph/osd/ceph-0/
-total 32
--rw-r--r-- 1 root root 37 Aug  1 08:59 ceph_fsid
-drwxr-xr-x 4 root root 61 Aug  1 08:59 current
--rw-r--r-- 1 root root 37 Aug  1 08:59 fsid
-lrwxrwxrwx 1 root root 58 Aug  1 09:07 journal -> /dev/disk/by-partuuid/f920d451-24c6-4748-a2ed-6f286db89718
--rw------- 1 root root 56 Aug  1 08:59 keyring
--rw-r--r-- 1 root root 21 Aug  1 08:59 magic
--rw-r--r-- 1 root root  6 Aug  1 08:59 ready
--rw-r--r-- 1 root root  4 Aug  1 08:59 store_version
--rw-r--r-- 1 root root 53 Aug  1 08:59 superblock
--rw-r--r-- 1 root root  2 Aug  1 08:59 whoami
-
-初始化日志盘
-[root@node242 ~]# ceph-osd -i 0 --mkjournal
- HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
-2019-08-01 09:08:43.194481 7ff99f29c880 -1 journal read_header error decoding journal header
- HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
-2019-08-01 09:08:43.199588 7ff99f29c880 -1 created new journal /var/lib/ceph/osd/ceph-0/journal for object store /var/lib/ceph/osd/ceph-0
-
 启动服务
 [root@node242 ~]# ceph-osd -i 0 
 starting osd.0 at :/0 osd_data /var/lib/ceph/osd/ceph-0 /var/lib/ceph/osd/ceph-0/journal
+[root@node242 ~]# ps -ef | grep osd
+root     19995     1  1 11:23 ?        00:00:00 ceph-osd -i 0
+root     20090  9959  0 11:23 pts/0    00:00:00 grep --color=auto osd
 
 把 osd.0 加入 crushmap
 [root@node242 ~]# ceph osd tree
-ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
--1 2.00000 root default                                       
- 0       0 osd.0                 up  1.00000          1.00000 
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY 
+-1      0 root default                                   
+ 0      0 osd.0             up  1.00000          1.00000
 [root@node242 ~]# ceph osd crush add osd.0  1.0 root=default host=node242
 add item id 0 name 'osd.0' weight 1 at location {host=node242,root=default} to crush map
 [root@node242 ~]# ceph osd tree
 ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
--1 3.00000 root default                                       
--2 3.00000     host node242                                   
- 0 1.00000         osd.0         up  1.00000          1.00000 
+-1 1.00000 root default                                       
+-2 1.00000     host node242                                   
+ 0 1.00000         osd.0         up  1.00000          1.00000
 
 
 重复以上的创建 osd 过程，添加osd
@@ -288,10 +286,20 @@ ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY
  2 1.00000         osd.2         up  1.00000          1.00000 
 
 
+
 3、配置 Ceph 集群
 
 查看集群状态
-
+[root@node242 ~]# ceph -s
+    cluster 346436e3-a7f4-4fd9-9694-e9830faec4d5
+     health HEALTH_WARN
+            too few PGs per OSD (21 < min 30)
+     monmap e1: 1 mons at {node242=192.168.100.242:6789/0}
+            election epoch 2, quorum 0 node242
+     osdmap e13: 3 osds: 3 up, 3 in
+      pgmap v21: 64 pgs, 1 pools, 0 bytes data, 0 objects
+            100416 kB used, 19530 MB / 19629 MB avail
+                  64 active+clean
 
 
 查看池信息
@@ -316,8 +324,9 @@ set pool 0 pgp_num to 128
      health HEALTH_OK
      monmap e1: 1 mons at {node242=192.168.100.242:6789/0}
             election epoch 2, quorum 0 node242
-     osdmap e34: 3 osds: 3 up, 3 in
-      pgmap v127: 128 pgs, 1 pools, 0 bytes data, 0 objects
-            1126 MB used, 20139 MB / 21266 MB avail
+     osdmap e18: 3 osds: 3 up, 3 in
+      pgmap v32: 128 pgs, 1 pools, 0 bytes data, 0 objects
+            101180 kB used, 19530 MB / 19629 MB avail
                  128 active+clean
+
 
