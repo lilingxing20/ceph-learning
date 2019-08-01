@@ -1,0 +1,323 @@
+
+1、环境准备
+1.1 安装系统
+[root@node242 ~]# cat /etc/redhat-release
+CentOS Linux release 7.2.1511 (Core)
+
+1.2 关闭selinux
+[root@node242 ~]# sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+[root@node242 ~]# setenforce 0
+
+1.3 配置yum源
+[root@node242 ~]# curl -o /etc/yum.repos.d/openstack-mitaka-ceph-hammer-7.2-x86_64.repo http://172.30.120.146/repo.files/mitaka.x86.repo
+[root@node242 ~]# yum clean all
+[root@node242 ~]# yum makecache
+
+1.4 时间同步
+[root@node242 ~]# yum install ntp -y
+[root@node242 ~]# ntpdate cn.pool.ntp.org
+ 1 Aug 09:46:23 ntpdate[23508]: step time server 202.108.6.95 offset 973.598833 sec
+
+
+2、部署 Ceph 集群
+
+
+2.1 安装 ceph
+[root@node242 ~]# yum install ceph -y
+
+
+2.2 创建 ceph.conf 配置文件
+[root@node242 ~]# uuidgen
+346436e3-a7f4-4fd9-9694-e9830faec4d5
+[root@node242 ~]# vim /etc/ceph/ceph.conf
+[global]
+fsid = 346436e3-a7f4-4fd9-9694-e9830faec4d5
+mon initial members = node242
+mon host = 192.168.100.242
+public network = 192.168.100.0/24
+auth cluster required = cephx
+auth service required = cephx
+auth client required = cephx
+osd journal size = 1024
+osd pool default size = 1
+osd pool default min size = 1
+osd pool default pg num = 128
+osd pool default pgp num = 128
+osd crush chooseleaf type = 1
+osd mkfs type = btrfs
+mon clock drift allowed = 2
+mon clock drift warn backoff = 30
+
+[mon.node242]
+host = node242
+mon addr = 192.168.100.242:6789
+
+
+2.3 部署配置 Ceph Monitors
+[root@node242 ~]# mkdir ceph
+[root@node242 ~]# cd ceph/
+[root@node242 ceph]# ls
+
+创建一个 ceph.mon.keyring
+[root@node242 ceph]# ceph-authtool --create-keyring ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *'
+creating ceph.mon.keyring
+
+创建一个 ceph.client.admin.keyring
+[root@node242 ceph]# ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring --gen-key -n client.admin --set-uid=0 --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow'
+creating /etc/ceph/ceph.client.admin.keyring
+
+将ceph.client.admin.keyring导入到ceph.mon.keyring
+[root@node242 ceph]# ceph-authtool ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
+importing contents of /etc/ceph/ceph.client.admin.keyring into ceph.mon.keyring
+
+创建一个Mon，名字叫${HOSTNAME}(此处可以直接写主机名，如: node242)
+[root@node242 ceph]# monmaptool --create --add ${HOSTNAME} 192.168.100.242 --fsid 346436e3-a7f4-4fd9-9694-e9830faec4d5 ./monmap
+monmaptool: monmap file monmap
+monmaptool: set fsid to 346436e3-a7f4-4fd9-9694-e9830faec4d5
+monmaptool: writing epoch 0 to monmap (1 monitors)
+
+创建存储 monitor 数据的文件夹，文件夹里主要有keyring和store.db
+[root@node242 ceph]# mkdir /var/lib/ceph/mon/ceph-${HOSTNAME}
+
+使用 monmap 和 ceph.mon.keyring 初始化 ceph-mon 守护进程开启需要的数据文件keyring和store.db
+[root@node242 ceph]# ceph-mon --mkfs -i ${HOSTNAME} --monmap ./monmap --keyring ./ceph.mon.keyring
+2019-07-31 19:27:03.659441 7f2f416b0880 -1 did not load config file, using default settings.
+ceph-mon: created monfs at /var/lib/ceph/mon/ceph-node242 for mon.node242
+
+在 monitor 数据目录下创建 done 文件，防止重新建立MON
+[root@node242 ceph]# touch /var/lib/ceph/mon/ceph-${HOSTNAME}/done
+
+启动 ceph-mon
+[root@node242 ceph]# /etc/init.d/ceph start mon.node242
+=== mon.node242 ===
+Starting Ceph mon.node242 on node242...
+Running as unit run-10346.service.
+Starting ceph-create-keys on node242...
+[root@node242 ceph]# /etc/init.d/ceph status mon.node242
+=== mon.node242 ===
+mon.node242: running {"version":"0.94.5"}
+
+查看集群状态
+[root@node242 ceph]# ceph -s
+    cluster 346436e3-a7f4-4fd9-9694-e9830faec4d5
+     health HEALTH_ERR
+            64 pgs stuck inactive
+            64 pgs stuck unclean
+            no osds
+     monmap e1: 1 mons at {node242=192.168.100.242:6789/0}
+            election epoch 2, quorum 0 node242
+     osdmap e1: 0 osds: 0 up, 0 in
+      pgmap v2: 64 pgs, 1 pools, 0 bytes data, 0 objects
+            0 kB used, 0 kB / 0 kB avail
+                  64 creating
+[root@node242 ceph]# ceph osd tree
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
+-1      0 root default
+[root@node242 ~]# ceph osd pool ls detail
+pool 0 'rbd' replicated size 1 min_size 1 crush_ruleset 0 object_hash rjenkins pg_num 64 pgp_num 64 last_change 1 flags hashpspool stripe_width 0
+
+
+
+2.4 部署配置 Ceph OSD
+
+查看osd节点磁盘
+[root@node242 ~]# lsblk 
+NAME            MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+vda             252:0    0   80G  0 disk 
+├─vda1          252:1    0  500M  0 part /boot
+└─vda2          252:2    0 79.5G  0 part 
+  ├─centos-root 253:0    0   75G  0 lvm  /
+  └─centos-swap 253:1    0  3.9G  0 lvm  [SWAP]
+vdb             252:16   0    8G  0 disk 
+vdc             252:32   0    8G  0 disk 
+vdd             252:48   0    8G  0 disk
+
+查看磁盘分区表
+[root@node242 ~]# parted /dev/vdb print
+Error: /dev/vdb: unrecognised disk label
+Model: Virtio Block Device (virtblk)                                      
+Disk /dev/vdb: 8590MB
+Sector size (logical/physical): 512B/512B
+Partition Table: unknown
+Disk Flags:
+
+磁盘格式化
+[root@node242 ~]# mkfs.xfs  -f /dev/vdb
+meta-data=/dev/vdb               isize=256    agcount=4, agsize=524288 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=0        finobt=0
+data     =                       bsize=4096   blocks=2097152, imaxpct=25
+         =                       sunit=0      swidth=0 blks
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal log           bsize=4096   blocks=2560, version=2
+         =                       sectsz=512   sunit=0 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0
+
+查看磁盘分区表, 并把磁盘分区表设置为 gpt
+[root@node242 ~]# parted /dev/vdb print
+Model: Virtio Block Device (virtblk)
+Disk /dev/vdb: 8590MB
+Sector size (logical/physical): 512B/512B
+Partition Table: loop
+Disk Flags:
+
+Number  Start  End     Size    File system  Flags
+ 1      0.00B  8590MB  8590MB  xfs
+
+[root@node242 ~]# parted /dev/vdb mktable gpt
+Warning: The existing disk label on /dev/vdb will be destroyed and all data on this disk will be lost. Do you want to continue?
+Yes/No? Yes
+Information: You may need to update /etc/fstab.
+
+[root@node242 ~]# parted /dev/vdb print
+Model: Virtio Block Device (virtblk)
+Disk /dev/vdb: 8590MB
+Sector size (logical/physical): 512B/512B
+Partition Table: gpt
+Disk Flags:
+
+Number  Start  End  Size  File system  Name  Flags
+
+创建分区1作为日志盘
+[root@node242 ~]# parted /dev/vdb  mkpart primary xfs 0% 20%
+Information: You may need to update /etc/fstab.
+
+创建分区2作为数据盘
+[root@node242 ~]# parted /dev/vdb  mkpart primary xfs 20% 100%
+Information: You may need to update /etc/fstab.
+
+[root@node242 ~]# lsblk /dev/vdb
+NAME   MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+vdb    252:16   0    8G  0 disk 
+├─vdb1 252:17   0  1.6G  0 part 
+└─vdb2 252:18   0  6.4G  0 part
+
+创建 osd , 分配 osd id
+[root@node242 ~]# ceph osd tree
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
+-1      0 root default
+[root@node242 ~]# ceph osd create
+0
+[root@node242 ~]# ceph osd tree
+ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
+-1 2.00000 root default                                       
+ 0       0 osd.0               down        0          1.00000 
+
+创建存储 osd 数据的文件夹，挂载 osd 数据盘
+[root@node242 ~]# mkdir /var/lib/ceph/osd/ceph-0
+[root@node242 ~]# mkfs.xfs -f /dev/vdb2 
+meta-data=/dev/vdb2              isize=256    agcount=4, agsize=419392 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=0        finobt=0
+data     =                       bsize=4096   blocks=1677568, imaxpct=25
+         =                       sunit=0      swidth=0 blks
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal log           bsize=4096   blocks=2560, version=2
+         =                       sectsz=512   sunit=0 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0
+[root@node242 ~]# mount /dev/vdb2 /var/lib/ceph/osd/ceph-0/
+
+创建 osd.0 的 keyring 文件
+[root@node242 ~]# ceph-osd -i 0 --mkfs --mkkey
+2019-08-01 08:59:23.501387 7ff977bbd880 -1 journal FileJournal::_open: disabling aio for non-block journal.  Use journal_force_aio to force use of aio anyway
+2019-08-01 08:59:23.529206 7ff977bbd880 -1 journal FileJournal::_open: disabling aio for non-block journal.  Use journal_force_aio to force use of aio anyway
+2019-08-01 08:59:23.530340 7ff977bbd880 -1 filestore(/var/lib/ceph/osd/ceph-0) could not find 23c2fcde/osd_superblock/0//-1 in index: (2) No such file or directory
+2019-08-01 08:59:23.544800 7ff977bbd880 -1 created object store /var/lib/ceph/osd/ceph-0 journal /var/lib/ceph/osd/ceph-0/journal for osd.0 fsid 346436e3-a7f4-4fd9-9694-e9830faec4d5
+2019-08-01 08:59:23.544887 7ff977bbd880 -1 auth: error reading file: /var/lib/ceph/osd/ceph-0/keyring: can't open /var/lib/ceph/osd/ceph-0/keyring: (2) No such file or directory
+2019-08-01 08:59:23.544996 7ff977bbd880 -1 created new key in keyring /var/lib/ceph/osd/ceph-0/keyring
+
+添加 osd.0 的认证信息
+[root@node242 ~]# ceph auth add osd.0 osd 'allow *' mon 'allow rwx' -i /var/lib/ceph/osd/ceph-0/keyring
+added key for osd.0
+
+链接到 osd 日志盘
+[root@node242 ~]# rm -f /var/lib/ceph/osd/ceph-0/journal 
+[root@node242 ~]# ls -l /dev/disk/by-partuuid/
+total 0
+lrwxrwxrwx 1 root root 10 Aug  1 08:58 42297590-7638-4aec-8273-349fe7f7c5ab -> ../../vdd2
+lrwxrwxrwx 1 root root 10 Jul 31 23:17 4b45febe-c7e1-4562-b9ba-081f879a4d34 -> ../../vdc1
+lrwxrwxrwx 1 root root 10 Jul 31 22:58 4bd32cd6-2126-4e40-9487-4016e8b3a819 -> ../../vdc2
+lrwxrwxrwx 1 root root 10 Jul 31 22:56 dfb54491-9020-49f2-b697-83f3fc8859d6 -> ../../vdd1
+lrwxrwxrwx 1 root root 10 Jul 31 22:40 f920d451-24c6-4748-a2ed-6f286db89718 -> ../../vdb1
+[root@node242 ~]# ln -s /dev/disk/by-partuuid/f920d451-24c6-4748-a2ed-6f286db89718 /var/lib/ceph/osd/ceph-0/journal 
+[root@node242 ~]# ls -l /var/lib/ceph/osd/ceph-0/
+total 32
+-rw-r--r-- 1 root root 37 Aug  1 08:59 ceph_fsid
+drwxr-xr-x 4 root root 61 Aug  1 08:59 current
+-rw-r--r-- 1 root root 37 Aug  1 08:59 fsid
+lrwxrwxrwx 1 root root 58 Aug  1 09:07 journal -> /dev/disk/by-partuuid/f920d451-24c6-4748-a2ed-6f286db89718
+-rw------- 1 root root 56 Aug  1 08:59 keyring
+-rw-r--r-- 1 root root 21 Aug  1 08:59 magic
+-rw-r--r-- 1 root root  6 Aug  1 08:59 ready
+-rw-r--r-- 1 root root  4 Aug  1 08:59 store_version
+-rw-r--r-- 1 root root 53 Aug  1 08:59 superblock
+-rw-r--r-- 1 root root  2 Aug  1 08:59 whoami
+
+初始化日志盘
+[root@node242 ~]# ceph-osd -i 0 --mkjournal
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+2019-08-01 09:08:43.194481 7ff99f29c880 -1 journal read_header error decoding journal header
+ HDIO_DRIVE_CMD(identify) failed: Inappropriate ioctl for device
+2019-08-01 09:08:43.199588 7ff99f29c880 -1 created new journal /var/lib/ceph/osd/ceph-0/journal for object store /var/lib/ceph/osd/ceph-0
+
+启动服务
+[root@node242 ~]# ceph-osd -i 0 
+starting osd.0 at :/0 osd_data /var/lib/ceph/osd/ceph-0 /var/lib/ceph/osd/ceph-0/journal
+
+把 osd.0 加入 crushmap
+[root@node242 ~]# ceph osd tree
+ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
+-1 2.00000 root default                                       
+ 0       0 osd.0                 up  1.00000          1.00000 
+[root@node242 ~]# ceph osd crush add osd.0  1.0 root=default host=node242
+add item id 0 name 'osd.0' weight 1 at location {host=node242,root=default} to crush map
+[root@node242 ~]# ceph osd tree
+ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
+-1 3.00000 root default                                       
+-2 3.00000     host node242                                   
+ 0 1.00000         osd.0         up  1.00000          1.00000 
+
+
+重复以上的创建 osd 过程，添加osd
+[root@node242 ~]# ceph osd tree
+ID WEIGHT  TYPE NAME        UP/DOWN REWEIGHT PRIMARY-AFFINITY 
+-1 3.00000 root default                                       
+-2 3.00000     host node242                                   
+ 0 1.00000         osd.0         up  1.00000          1.00000 
+ 1 1.00000         osd.1         up  1.00000          1.00000 
+ 2 1.00000         osd.2         up  1.00000          1.00000 
+
+
+3、配置 Ceph 集群
+
+查看集群状态
+
+
+
+查看池信息
+[root@node242 ~]# ceph  osd pool ls detail
+pool 0 'rbd' replicated size 1 min_size 1 crush_ruleset 0 object_hash rjenkins pg_num 64 pgp_num 64 last_change 29 flags hashpspool stripe_width 0
+
+
+调整 rbd 池的 pg_num 和 pgp_num
+[root@node242 ~]# ceph osd pool set rbd pgp_num 128
+Error EINVAL: specified pgp_num 128 > pg_num 64
+[root@node242 ~]# ceph osd pool set rbd pg_num 128
+set pool 0 pg_num to 128
+[root@node242 ~]# ceph osd pool set rbd pgp_num 128
+Error EBUSY: currently creating pgs, wait
+[root@node242 ~]# ceph osd pool set rbd pgp_num 128
+set pool 0 pgp_num to 128
+
+
+再次查看集群状态
+[root@node242 ~]# ceph -s
+    cluster 346436e3-a7f4-4fd9-9694-e9830faec4d5
+     health HEALTH_OK
+     monmap e1: 1 mons at {node242=192.168.100.242:6789/0}
+            election epoch 2, quorum 0 node242
+     osdmap e34: 3 osds: 3 up, 3 in
+      pgmap v127: 128 pgs, 1 pools, 0 bytes data, 0 objects
+            1126 MB used, 20139 MB / 21266 MB avail
+                 128 active+clean
+
