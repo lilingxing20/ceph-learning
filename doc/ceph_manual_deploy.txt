@@ -141,32 +141,8 @@ Sector size (logical/physical): 512B/512B
 Partition Table: unknown
 Disk Flags:
 
-磁盘格式化
-[root@node242 ~]# mkfs.xfs  -f /dev/vdb
-meta-data=/dev/vdb               isize=256    agcount=4, agsize=524288 blks
-         =                       sectsz=512   attr=2, projid32bit=1
-         =                       crc=0        finobt=0
-data     =                       bsize=4096   blocks=2097152, imaxpct=25
-         =                       sunit=0      swidth=0 blks
-naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
-log      =internal log           bsize=4096   blocks=2560, version=2
-         =                       sectsz=512   sunit=0 blks, lazy-count=1
-realtime =none                   extsz=4096   blocks=0, rtextents=0
-
 查看磁盘分区表, 并把磁盘分区表设置为 gpt
-[root@node242 ~]# parted /dev/vdb print
-Model: Virtio Block Device (virtblk)
-Disk /dev/vdb: 8590MB
-Sector size (logical/physical): 512B/512B
-Partition Table: loop
-Disk Flags:
-
-Number  Start  End     Size    File system  Flags
- 1      0.00B  8590MB  8590MB  xfs
-
 [root@node242 ~]# parted /dev/vdb mktable gpt
-Warning: The existing disk label on /dev/vdb will be destroyed and all data on this disk will be lost. Do you want to continue?
-Yes/No? Yes
 Information: You may need to update /etc/fstab.
 
 [root@node242 ~]# parted /dev/vdb print
